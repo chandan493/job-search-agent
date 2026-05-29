@@ -883,6 +883,30 @@ def salary_from_schema(value: Any) -> str:
     return clean_text(json.dumps(value, ensure_ascii=False))
 
 
+def experience_range_from_text(text: str) -> str:
+    text = clean_text(text)
+    if not text:
+        return "Not specified"
+    lowered = text.lower()
+    if re.search(r"\b(fresher|freshers|entry[- ]level|graduate trainee|internship)\b", lowered):
+        return "0-2 years"
+    range_match = re.search(
+        r"\b(\d{1,2})\s*(?:\+)?\s*(?:-|–|—|to)\s*(\d{1,2})\s*(?:\+)?\s*(?:years?|yrs?)\b",
+        lowered,
+        re.I,
+    )
+    if range_match:
+        return f"{range_match.group(1)}-{range_match.group(2)} years"
+    plus_match = re.search(
+        r"\b(?:minimum|min\.?|at least|over|more than)?\s*(\d{1,2})\s*\+?\s*(?:years?|yrs?)\b",
+        lowered,
+        re.I,
+    )
+    if plus_match:
+        return f"{plus_match.group(1)}+ years"
+    return "Not specified"
+
+
 def company_from_schema(value: Any) -> str:
     if isinstance(value, dict):
         return clean_text(value.get("name") or value.get("legalName"))
@@ -1566,6 +1590,9 @@ def job_to_dashboard_record(job: Dict[str, Any], run_date: dt.date) -> Dict[str,
         "apply_link": job.get("apply_link", ""),
         "job_uid": job.get("job_uid", ""),
         "description": job.get("description", ""),
+        "experience_range": experience_range_from_text(
+            " ".join([job.get("title", ""), job.get("description", "")])
+        ),
     }
 
 
@@ -1638,6 +1665,14 @@ def write_latest_jobs_outputs(
         resume_url = f"/resume/{uid}"
         apply = html.escape(job["apply_link"])
         resume_label = html.escape(f"Download tailored resume for {job['title']} at {job['company']}")
+        detail_label = html.escape(f"Show details for {job['title']} at {job['company']}")
+        job_description = clean_text(job.get("description", "")) or "No job description was available from the source."
+        experience_range = clean_text(job.get("experience_range", "")) or "Not specified"
+        detail_button = (
+            f'<button class="job-info-button" type="button" aria-label="{detail_label}" '
+            f'data-title="{html.escape(job["title"])}" data-company="{html.escape(job["company"])}" '
+            f'data-experience="{html.escape(experience_range)}" data-description="{html.escape(job_description)}">i</button>'
+        )
         if job.get("salary_inr"):
             salary_html = html.escape(job["salary_inr"])
         elif job.get("salary_estimate"):
@@ -1654,7 +1689,7 @@ def write_latest_jobs_outputs(
             f"data-search=\"{html.escape(' '.join([job['title'], job['company'], job['location'], job['source'], job['matched_keywords']]).lower())}\">"
             f"<td><span class=\"score\">{html.escape(str(job['match_score']))}</span></td>"
             f"<td><span class=\"date\">{html.escape(job['posted_date'])}</span><span class=\"source-chip\">{html.escape(job['source'])}</span></td>"
-            f"<td><strong>{html.escape(job['title'])}</strong><br><span>{html.escape(job['company'])}</span></td>"
+            f"<td><div class=\"job-title-line\"><strong>{html.escape(job['title'])}</strong>{detail_button}</div><span>{html.escape(job['company'])}</span></td>"
             f"<td>{html.escape(job['location'])}</td>"
             f"<td>{salary_html}</td>"
             f"<td><span class=\"keywords\">{html.escape(job['matched_keywords'])}</span></td>"
@@ -1775,6 +1810,14 @@ def write_latest_jobs_outputs(
     span {{ color: var(--muted); }}
     .score {{ display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--accent); color: #050505; font-weight: 950; }}
     .source-chip {{ display: inline-flex; margin-top: 7px; padding: 3px 7px; border: 1px solid rgba(255,210,31,.28); border-radius: 999px; color: var(--accent); font-size: 11px; }}
+    .job-title-line {{ display: flex; align-items: flex-start; gap: 8px; }}
+    .job-info-button {{ width: 20px; height: 20px; flex: 0 0 auto; display: inline-grid; place-items: center; border: 1px solid rgba(255,210,31,.5); border-radius: 50%; background: rgba(255,210,31,.08); color: var(--accent); font: inherit; font-size: 11px; font-weight: 950; cursor: help; }}
+    .job-info-button:hover, .job-info-button:focus-visible {{ background: var(--accent); color: #050505; outline: none; }}
+    .job-detail-popover {{ position: fixed; z-index: 90; width: min(460px, calc(100vw - 28px)); max-height: min(420px, calc(100vh - 28px)); display: none; overflow: auto; padding: 13px; border: 1px solid rgba(255,210,31,.32); border-radius: 8px; background: #101010; color: var(--ink); box-shadow: var(--shadow); }}
+    .job-detail-popover.is-open {{ display: block; }}
+    .job-detail-title {{ color: var(--accent); font-size: 14px; font-weight: 950; line-height: 1.25; }}
+    .job-detail-meta {{ margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 850; }}
+    .job-detail-copy {{ margin-top: 10px; white-space: pre-wrap; color: rgba(255,255,255,.86); font-size: 12px; line-height: 1.45; }}
     .salary-estimate {{ display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 850; }}
     .salary-info {{ position: relative; width: 18px; height: 18px; display: inline-grid; place-items: center; flex: 0 0 auto; border: 1px solid rgba(255,210,31,.5); border-radius: 50%; color: var(--accent); background: rgba(255,210,31,.08); font-size: 11px; font-weight: 950; cursor: help; }}
     .salary-info:focus-visible {{ outline: 2px solid rgba(255,210,31,.55); outline-offset: 2px; }}
@@ -1892,6 +1935,7 @@ def write_latest_jobs_outputs(
       <span>Developed by Chandan Ghosh: <a href="https://www.linkedin.com/in/chandan-ghosh-43350650/" target="_blank" rel="noopener">https://www.linkedin.com/in/chandan-ghosh-43350650/</a></span>
     </div>
   </footer>
+  <div class="job-detail-popover" id="jobDetailPopover" role="tooltip" aria-hidden="true"></div>
   <div class="resume-download-overlay" id="resumeDownloadOverlay" aria-live="polite" aria-modal="true" role="dialog" aria-label="Preparing tailored resume">
     <div class="resume-download-panel">
       <div class="resume-download-ring" id="resumeDownloadRing"><span class="resume-download-percent" id="resumeDownloadPercent">1%</span></div>
@@ -1920,6 +1964,8 @@ def write_latest_jobs_outputs(
     const resumeDownloadPercent = document.getElementById('resumeDownloadPercent');
     const resumeDownloadMessage = document.getElementById('resumeDownloadMessage');
     const salaryInfoMarkers = Array.from(document.querySelectorAll('.salary-info'));
+    const jobInfoButtons = Array.from(document.querySelectorAll('.job-info-button'));
+    const jobDetailPopover = document.getElementById('jobDetailPopover');
     let runProgressTimer = null;
     let runProgressValue = 1;
     let resumeDownloadTimer = null;
@@ -1931,6 +1977,51 @@ def write_latest_jobs_outputs(
       'Creating your tailored resume',
       'Publishing the download'
     ];
+
+    function positionJobDetailPopover(button) {{
+      if (!jobDetailPopover || !button) return;
+      const rect = button.getBoundingClientRect();
+      const margin = 12;
+      const popoverRect = jobDetailPopover.getBoundingClientRect();
+      const width = popoverRect.width || Math.min(460, window.innerWidth - 28);
+      const height = popoverRect.height || Math.min(420, window.innerHeight - 28);
+      let left = rect.right + margin;
+      if (left + width > window.innerWidth - margin) left = Math.max(margin, window.innerWidth - width - margin);
+      let top = rect.top - 8;
+      if (top + height > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - height - margin);
+      jobDetailPopover.style.left = `${{left}}px`;
+      jobDetailPopover.style.top = `${{top}}px`;
+    }}
+
+    function showJobDetail(button) {{
+      if (!jobDetailPopover || !button) return;
+      const title = button.dataset.title || 'Job details';
+      const company = button.dataset.company || '';
+      const experience = button.dataset.experience || 'Not specified';
+      const description = button.dataset.description || 'No job description was available from the source.';
+      jobDetailPopover.textContent = '';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'job-detail-title';
+      titleEl.textContent = title;
+      const metaEl = document.createElement('div');
+      metaEl.className = 'job-detail-meta';
+      metaEl.textContent = `${{company ? company + ' · ' : ''}}Experience required: ${{experience}}`;
+      const copyEl = document.createElement('div');
+      copyEl.className = 'job-detail-copy';
+      copyEl.textContent = description;
+      jobDetailPopover.append(titleEl, metaEl, copyEl);
+      jobDetailPopover.classList.add('is-open');
+      jobDetailPopover.setAttribute('aria-hidden', 'false');
+      button.setAttribute('aria-describedby', 'jobDetailPopover');
+      positionJobDetailPopover(button);
+    }}
+
+    function hideJobDetail() {{
+      if (!jobDetailPopover) return;
+      jobDetailPopover.classList.remove('is-open');
+      jobDetailPopover.setAttribute('aria-hidden', 'true');
+      jobInfoButtons.forEach((button) => button.removeAttribute('aria-describedby'));
+    }}
 
     function applyFilters() {{
       const source = sourceFilter.value;
@@ -2090,6 +2181,22 @@ def write_latest_jobs_outputs(
 
     runAgentButton.addEventListener('click', runFreshReport);
     document.querySelectorAll('.download-button').forEach((link) => link.addEventListener('click', downloadTailoredResume));
+    jobInfoButtons.forEach((button) => {{
+      button.addEventListener('mouseenter', () => showJobDetail(button));
+      button.addEventListener('focus', () => showJobDetail(button));
+      button.addEventListener('mouseleave', hideJobDetail);
+      button.addEventListener('blur', hideJobDetail);
+      button.addEventListener('click', (event) => {{
+        event.stopPropagation();
+        if (jobDetailPopover && jobDetailPopover.classList.contains('is-open') && button.getAttribute('aria-describedby')) {{
+          hideJobDetail();
+        }} else {{
+          showJobDetail(button);
+        }}
+      }});
+    }});
+    window.addEventListener('scroll', hideJobDetail, true);
+    window.addEventListener('resize', hideJobDetail);
     salaryInfoMarkers.forEach((marker) => {{
       marker.addEventListener('click', (event) => {{
         event.stopPropagation();
@@ -2100,7 +2207,10 @@ def write_latest_jobs_outputs(
     }});
     document.addEventListener('click', () => salaryInfoMarkers.forEach((marker) => marker.classList.remove('is-open')));
     document.addEventListener('keydown', (event) => {{
-      if (event.key === 'Escape') salaryInfoMarkers.forEach((marker) => marker.classList.remove('is-open'));
+      if (event.key === 'Escape') {{
+        salaryInfoMarkers.forEach((marker) => marker.classList.remove('is-open'));
+        hideJobDetail();
+      }}
     }});
     if (profileButton && profileDropdown) {{
       profileButton.addEventListener('click', (event) => {{

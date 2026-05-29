@@ -640,6 +640,7 @@ def inject_dashboard_run_control(html_text: str) -> str:
     html_text = inject_candidate_profile(html_text)
     html_text = inject_resume_insights(html_text)
     html_text = inject_dashboard_download_labels(html_text)
+    html_text = inject_job_detail_buttons(html_text)
     html_text = inject_resume_download_loader(html_text)
     if "runAgentButton" not in html_text:
         html_text = html_text.replace(
@@ -1279,6 +1280,182 @@ def inject_dashboard_download_labels(html_text: str) -> str:
             "    .download-button { min-height: 34px; padding: 7px 10px; font-size: 12px; }",
         )
     return html_text
+
+
+def experience_range_from_job_text(text: str) -> str:
+    text = clean_dashboard_text(text)
+    if not text:
+        return "Not specified"
+    lowered = text.lower()
+    if re.search(r"\b(fresher|freshers|entry[- ]level|graduate trainee|internship)\b", lowered):
+        return "0-2 years"
+    range_match = re.search(
+        r"\b(\d{1,2})\s*(?:\+)?\s*(?:-|–|—|to)\s*(\d{1,2})\s*(?:\+)?\s*(?:years?|yrs?)\b",
+        lowered,
+        re.I,
+    )
+    if range_match:
+        return f"{range_match.group(1)}-{range_match.group(2)} years"
+    plus_match = re.search(
+        r"\b(?:minimum|min\.?|at least|over|more than)?\s*(\d{1,2})\s*\+?\s*(?:years?|yrs?)\b",
+        lowered,
+        re.I,
+    )
+    if plus_match:
+        return f"{plus_match.group(1)}+ years"
+    return "Not specified"
+
+
+def load_jobs_by_uid_for_dashboard() -> dict:
+    latest_path = DATA_DIR / "latest_jobs.json"
+    if not latest_path.exists():
+        return {}
+    try:
+        payload = json.loads(latest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    jobs = {}
+    for job in payload.get("jobs", []) or []:
+        uid = str(job.get("job_uid") or "")
+        if uid:
+            jobs[uid] = job
+    return jobs
+
+
+def job_detail_button_html(job: dict) -> str:
+    title = clean_dashboard_text(job.get("title", ""))
+    company = clean_dashboard_text(job.get("company", ""))
+    description = clean_dashboard_text(job.get("description", "")) or "No job description was available from the source."
+    experience = clean_dashboard_text(job.get("experience_range", "")) or experience_range_from_job_text(
+        " ".join([title, description])
+    )
+    label = f"Show details for {title or 'this job'}"
+    if company:
+        label += f" at {company}"
+    return (
+        f'<button class="job-info-button" type="button" aria-label="{html_escape(label)}" '
+        f'data-title="{html_escape(title or "Job details")}" data-company="{html_escape(company)}" '
+        f'data-experience="{html_escape(experience)}" data-description="{html_escape(description)}">i</button>'
+    )
+
+
+def job_detail_css() -> str:
+    return """
+    .job-title-line { display: flex; align-items: flex-start; gap: 8px; }
+    .job-info-button { width: 20px; height: 20px; flex: 0 0 auto; display: inline-grid; place-items: center; border: 1px solid rgba(255,210,31,.5); border-radius: 50%; background: rgba(255,210,31,.08); color: var(--accent); font: inherit; font-size: 11px; font-weight: 950; cursor: help; }
+    .job-info-button:hover, .job-info-button:focus-visible { background: var(--accent); color: #050505; outline: none; }
+    .job-detail-popover { position: fixed; z-index: 90; width: min(460px, calc(100vw - 28px)); max-height: min(420px, calc(100vh - 28px)); display: none; overflow: auto; padding: 13px; border: 1px solid rgba(255,210,31,.32); border-radius: 8px; background: #101010; color: var(--ink); box-shadow: var(--shadow); }
+    .job-detail-popover.is-open { display: block; }
+    .job-detail-title { color: var(--accent); font-size: 14px; font-weight: 950; line-height: 1.25; }
+    .job-detail-meta { margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 850; }
+    .job-detail-copy { margin-top: 10px; white-space: pre-wrap; color: rgba(255,255,255,.86); font-size: 12px; line-height: 1.45; }
+"""
+
+
+def job_detail_script() -> str:
+    return """
+  <script>
+    const serverInjectedJobInfoButtons = Array.from(document.querySelectorAll('.job-info-button'));
+    const serverInjectedJobDetailPopover = document.getElementById('jobDetailPopover');
+    function serverInjectedPositionJobDetailPopover(button) {
+      if (!serverInjectedJobDetailPopover || !button) return;
+      const rect = button.getBoundingClientRect();
+      const margin = 12;
+      const popoverRect = serverInjectedJobDetailPopover.getBoundingClientRect();
+      const width = popoverRect.width || Math.min(460, window.innerWidth - 28);
+      const height = popoverRect.height || Math.min(420, window.innerHeight - 28);
+      let left = rect.right + margin;
+      if (left + width > window.innerWidth - margin) left = Math.max(margin, window.innerWidth - width - margin);
+      let top = rect.top - 8;
+      if (top + height > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - height - margin);
+      serverInjectedJobDetailPopover.style.left = `${left}px`;
+      serverInjectedJobDetailPopover.style.top = `${top}px`;
+    }
+    function serverInjectedShowJobDetail(button) {
+      if (!serverInjectedJobDetailPopover || !button) return;
+      const titleEl = document.createElement('div');
+      titleEl.className = 'job-detail-title';
+      titleEl.textContent = button.dataset.title || 'Job details';
+      const metaEl = document.createElement('div');
+      metaEl.className = 'job-detail-meta';
+      const company = button.dataset.company || '';
+      metaEl.textContent = `${company ? company + ' · ' : ''}Experience required: ${button.dataset.experience || 'Not specified'}`;
+      const copyEl = document.createElement('div');
+      copyEl.className = 'job-detail-copy';
+      copyEl.textContent = button.dataset.description || 'No job description was available from the source.';
+      serverInjectedJobDetailPopover.textContent = '';
+      serverInjectedJobDetailPopover.append(titleEl, metaEl, copyEl);
+      serverInjectedJobDetailPopover.classList.add('is-open');
+      serverInjectedJobDetailPopover.setAttribute('aria-hidden', 'false');
+      button.setAttribute('aria-describedby', 'jobDetailPopover');
+      serverInjectedPositionJobDetailPopover(button);
+    }
+    function serverInjectedHideJobDetail() {
+      if (!serverInjectedJobDetailPopover) return;
+      serverInjectedJobDetailPopover.classList.remove('is-open');
+      serverInjectedJobDetailPopover.setAttribute('aria-hidden', 'true');
+      serverInjectedJobInfoButtons.forEach((button) => button.removeAttribute('aria-describedby'));
+    }
+    serverInjectedJobInfoButtons.forEach((button) => {
+      button.addEventListener('mouseenter', () => serverInjectedShowJobDetail(button));
+      button.addEventListener('focus', () => serverInjectedShowJobDetail(button));
+      button.addEventListener('mouseleave', serverInjectedHideJobDetail);
+      button.addEventListener('blur', serverInjectedHideJobDetail);
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (serverInjectedJobDetailPopover && serverInjectedJobDetailPopover.classList.contains('is-open') && button.getAttribute('aria-describedby')) {
+          serverInjectedHideJobDetail();
+        } else {
+          serverInjectedShowJobDetail(button);
+        }
+      });
+    });
+    window.addEventListener('scroll', serverInjectedHideJobDetail, true);
+    window.addEventListener('resize', serverInjectedHideJobDetail);
+    document.addEventListener('click', serverInjectedHideJobDetail);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') serverInjectedHideJobDetail();
+    });
+  </script>
+"""
+
+
+def inject_job_detail_buttons(html_text: str) -> str:
+    jobs_by_uid = load_jobs_by_uid_for_dashboard()
+    if not jobs_by_uid:
+        return html_text
+    had_buttons = "job-info-button" in html_text
+    if ".job-info-button" not in html_text:
+        html_text = html_text.replace("</style>", f"{job_detail_css()}  </style>", 1)
+    if 'id="jobDetailPopover"' not in html_text:
+        html_text = html_text.replace(
+            '<div class="resume-download-overlay"',
+            '<div class="job-detail-popover" id="jobDetailPopover" role="tooltip" aria-hidden="true"></div>\n  <div class="resume-download-overlay"',
+            1,
+        )
+    if "jobInfoButtons" not in html_text and "serverInjectedJobInfoButtons" not in html_text:
+        html_text = html_text.replace("</body>", f"{job_detail_script()}</body>", 1)
+    if had_buttons:
+        return html_text
+
+    def add_detail_button(match: re.Match) -> str:
+        row = match.group(0)
+        uid_match = re.search(r'/resume/([^"#?]+)', row)
+        if not uid_match:
+            return row
+        uid = urllib.parse.unquote(uid_match.group(1))
+        job = jobs_by_uid.get(uid)
+        if not job:
+            return row
+        button = job_detail_button_html(job)
+        strong_match = re.search(r"<strong>.*?</strong>", row, re.S)
+        if not strong_match:
+            return row
+        title_markup = strong_match.group(0)
+        wrapped = f'<div class="job-title-line">{title_markup}{button}</div>'
+        return row[: strong_match.start()] + wrapped + row[strong_match.end() :]
+
+    return re.sub(r"<tr\b[\s\S]*?</tr>", add_detail_button, html_text)
 
 
 def roleforge_footer_html() -> str:
