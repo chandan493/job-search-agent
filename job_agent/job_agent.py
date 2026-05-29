@@ -123,6 +123,58 @@ def candidate_profile_summary(profile: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def resume_insights_summary(profile: Dict[str, Any]) -> Dict[str, Any]:
+    def items(key: str, limit: int) -> List[str]:
+        output: List[str] = []
+        seen = set()
+        for item in profile.get(key, []) or []:
+            value = clean_text(item)
+            marker = value.lower()
+            if value and marker not in seen:
+                seen.add(marker)
+                output.append(value)
+        return output[:limit]
+
+    primary_skills = items("primary_skills", 12)
+    secondary_skills = items("secondary_skills", 8)
+    domains = items("domains", 8)
+    target_roles = items("target_roles", 6)
+    keywords = items("keywords", 12)
+    summary = clean_text(profile.get("summary", ""))
+    seniority = clean_text(profile.get("seniority", ""))
+    years = clean_text(profile.get("total_years_experience", ""))
+    position = clean_text(profile.get("current_position", ""))
+    company = clean_text(profile.get("current_company", ""))
+
+    if not summary:
+        proof = ", ".join(primary_skills[:4] or keywords[:4])
+        role = target_roles[0] if target_roles else position or "the target role"
+        if proof:
+            summary = f"Profile aligns well with {role} opportunities, with strongest evidence around {proof}."
+        else:
+            summary = "Upload a richer resume or enable OpenAI parsing to generate deeper profile insight."
+
+    overview_bits = []
+    if years:
+        overview_bits.append(f"{years} years of experience" if "year" not in years.lower() else years)
+    if seniority:
+        overview_bits.append(seniority)
+    if position:
+        overview_bits.append(position)
+    if company:
+        overview_bits.append(f"current company: {company}")
+    overview = " | ".join(overview_bits) or "Profile overview will improve after the resume parser extracts more structured details."
+
+    return {
+        "overview": overview,
+        "summary": summary,
+        "strong_skills": primary_skills or keywords[:10],
+        "supporting_skills": secondary_skills,
+        "domains": domains,
+        "best_match_roles": target_roles[:5] or ([position] if position else []),
+    }
+
+
 def candidate_initials(name: str) -> str:
     parts = re.findall(r"[A-Za-z]+", name or "")
     if not parts or clean_text(name).lower() == "candidate":
@@ -1534,12 +1586,14 @@ def write_latest_jobs_outputs(
     html_path = data_dir / "latest_jobs.html"
     records = [job_to_dashboard_record(job, run_date) for job in jobs]
     candidate_profile = candidate_profile_summary(resume_profile)
+    resume_insights = resume_insights_summary(resume_profile)
     json_path.write_text(
         json.dumps(
             {
                 "run_date": run_date.isoformat(),
                 "run_timestamp": run_timestamp,
                 "candidate_profile": candidate_profile,
+                "resume_insights": resume_insights,
                 "server_url": f"http://127.0.0.1:{port}",
                 "jobs": records,
             },
@@ -1565,6 +1619,19 @@ def write_latest_jobs_outputs(
     profile_company = html.escape(candidate_profile["company"])
     profile_initials = html.escape(candidate_initials(candidate_profile["name"]))
     hero_name = profile_name if candidate_profile["name"] != "Candidate" else "there"
+    insight_skill_chips = "".join(
+        f'<span class="insight-chip">{html.escape(skill)}</span>' for skill in resume_insights.get("strong_skills", [])[:10]
+    ) or '<span class="insight-empty">No strong skills extracted yet.</span>'
+    insight_supporting_chips = "".join(
+        f'<span class="insight-chip muted">{html.escape(skill)}</span>' for skill in resume_insights.get("supporting_skills", [])[:8]
+    )
+    insight_domain_chips = "".join(
+        f'<span class="insight-chip muted">{html.escape(domain)}</span>' for domain in resume_insights.get("domains", [])[:8]
+    )
+    insight_signal_chips = insight_supporting_chips + insight_domain_chips or '<span class="insight-empty">No supporting signals extracted yet.</span>'
+    insight_role_items = "".join(
+        f'<li>{html.escape(role)}</li>' for role in resume_insights.get("best_match_roles", [])[:5]
+    ) or "<li>Run resume parsing to infer recommended roles.</li>"
     html_rows = []
     for job in records:
         uid = urllib.parse.quote(job["job_uid"])
@@ -1600,7 +1667,7 @@ def write_latest_jobs_outputs(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Latest Job Matches - {html.escape(run_date.isoformat())}</title>
+  <title>RoleForge - Latest Job Matches - {html.escape(run_date.isoformat())}</title>
   <style>
     :root {{
       --ink: #ffffff;
@@ -1624,7 +1691,10 @@ def write_latest_jobs_outputs(
     }}
     .nav {{ width: min(1240px, calc(100% - 32px)); min-height: 70px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; }}
     .brand {{ display: inline-flex; align-items: center; gap: 12px; font-weight: 900; }}
-    .brand-mark {{ width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; background: var(--accent); color: #050505; font-weight: 950; }}
+    .brand-name {{ color: var(--ink); font-weight: 950; white-space: nowrap; }}
+    .brand-mark {{ position: relative; width: 42px; height: 42px; flex: 0 0 42px; border-radius: 10px; display: grid; place-items: center; overflow: hidden; background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: #050505; font-size: 13px; font-weight: 950; box-shadow: 0 12px 28px rgba(255,210,31,.16); }}
+    .brand-mark::before {{ content: ""; position: absolute; inset: 7px; border: 2px solid rgba(5,5,5,.24); border-radius: 7px; transform: rotate(-8deg); }}
+    .brand-mark::after {{ content: ""; position: absolute; right: 7px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: rgba(5,5,5,.66); box-shadow: -14px 16px 0 rgba(5,5,5,.36); }}
     .nav-meta {{ color: var(--muted); font-size: 0.92rem; }}
     .nav-actions {{ display: inline-flex; align-items: center; gap: 10px; }}
     .profile-menu {{ position: relative; display: inline-flex; align-items: center; }}
@@ -1659,6 +1729,22 @@ def write_latest_jobs_outputs(
     .hero-stats div {{ padding: 18px; background: rgba(0,0,0,.72); }}
     .hero-stats dt {{ color: var(--accent); font-size: 1.9rem; font-weight: 950; line-height: 1; }}
     .hero-stats dd {{ margin: 6px 0 0; color: var(--muted); font-size: .86rem; }}
+    .resume-insights {{ border-bottom: 1px solid rgba(255,210,31,.14); background: #080808; }}
+    .resume-insights-inner {{ width: min(1240px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0; }}
+    .insight-grid {{ display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr); gap: 16px; }}
+    .insight-panel {{ border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }}
+    .insight-panel h2, .insight-panel h3 {{ margin: 0; color: var(--accent); letter-spacing: 0; }}
+    .insight-panel h2 {{ font-size: 1.05rem; }}
+    .insight-panel h3 {{ font-size: .86rem; text-transform: uppercase; }}
+    .insight-overview {{ margin: 10px 0 0; color: rgba(255,255,255,.86); font-size: 1rem; }}
+    .insight-copy {{ margin: 10px 0 0; color: var(--muted); }}
+    .insight-groups {{ display: grid; gap: 14px; }}
+    .insight-chip-row {{ display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }}
+    .insight-chip {{ display: inline-flex; align-items: center; min-height: 28px; padding: 5px 9px; border: 1px solid rgba(255,210,31,.3); border-radius: 999px; color: var(--accent); background: rgba(255,210,31,.06); font-size: 12px; font-weight: 850; }}
+    .insight-chip.muted {{ color: rgba(255,255,255,.78); border-color: var(--line); background: rgba(255,255,255,.04); }}
+    .insight-empty {{ color: var(--muted); font-size: 12px; }}
+    .role-list {{ margin: 10px 0 0; padding-left: 18px; color: rgba(255,255,255,.86); }}
+    .role-list li {{ margin: 5px 0; }}
     main {{ width: min(1240px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 48px; }}
     .controls {{ display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(180px, .7fr) minmax(180px, .7fr) auto; gap: 12px; margin-bottom: 18px; }}
     input, select {{ width: 100%; min-height: 46px; border: 1px solid rgba(255,210,31,.24); border-radius: 8px; background: var(--panel); color: var(--ink); padding: 0 13px; font: inherit; }}
@@ -1704,6 +1790,7 @@ def write_latest_jobs_outputs(
       .run-loader-label {{ display: none; }}
       .hero-content {{ padding-top: 46px; }}
       .hero-stats {{ grid-template-columns: 1fr; }}
+      .insight-grid {{ grid-template-columns: 1fr; }}
       .controls {{ grid-template-columns: 1fr; }}
     }}
   </style>
@@ -1711,7 +1798,7 @@ def write_latest_jobs_outputs(
 <body>
   <header class="site-header">
     <nav class="nav" aria-label="Dashboard">
-      <a class="brand" href="/"><span class="brand-mark">JA</span><span>Job Agent</span></a>
+      <a class="brand" href="/"><span class="brand-mark">RF</span><span class="brand-name">RoleForge</span></a>
       <div class="nav-actions">
         <button class="button secondary" id="runAgentButton" type="button">Run fresh report</button>
         <span class="run-status" id="runAgentStatus"></span>
@@ -1741,6 +1828,32 @@ def write_latest_jobs_outputs(
         <div><dt>{top_score}</dt><dd>highest match score</dd></div>
         <div><dt>{india_count}</dt><dd>India-focused listings</dd></div>
       </dl>
+    </div>
+  </section>
+  <section class="resume-insights" id="resumeInsights">
+    <div class="resume-insights-inner">
+      <div class="insight-grid">
+        <article class="insight-panel">
+          <p class="eyebrow">Resume insights</p>
+          <h2>Profile overview</h2>
+          <p class="insight-overview">{html.escape(str(resume_insights.get("overview", "")))}</p>
+          <p class="insight-copy">{html.escape(str(resume_insights.get("summary", "")))}</p>
+        </article>
+        <aside class="insight-panel insight-groups" aria-label="Resume skill and role insights">
+          <div>
+            <h3>Strong skill set</h3>
+            <div class="insight-chip-row">{insight_skill_chips}</div>
+          </div>
+          <div>
+            <h3>Supporting signals</h3>
+            <div class="insight-chip-row">{insight_signal_chips}</div>
+          </div>
+          <div>
+            <h3>Best match roles</h3>
+            <ol class="role-list">{insight_role_items}</ol>
+          </div>
+        </aside>
+      </div>
     </div>
   </section>
   <main>

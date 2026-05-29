@@ -633,6 +633,7 @@ def rebase_dashboard_resume_links(html_text: str) -> str:
 
 def inject_dashboard_run_control(html_text: str) -> str:
     html_text = inject_candidate_profile(html_text)
+    html_text = inject_resume_insights(html_text)
     html_text = inject_dashboard_download_labels(html_text)
     html_text = inject_resume_download_loader(html_text)
     if "runAgentButton" not in html_text:
@@ -1272,6 +1273,182 @@ def inject_dashboard_download_labels(html_text: str) -> str:
             "    .button:disabled { cursor: wait; opacity: .7; transform: none; }\n"
             "    .download-button { min-height: 34px; padding: 7px 10px; font-size: 12px; }",
         )
+    return html_text
+
+
+def clean_dashboard_text(value: object) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(value))).strip()
+
+
+def dashboard_items(profile: dict, key: str, limit: int) -> list[str]:
+    output = []
+    seen = set()
+    raw = profile.get(key, []) or []
+    if isinstance(raw, str):
+        raw = re.split(r"[\n,]", raw)
+    for item in raw:
+        value = clean_dashboard_text(item)
+        marker = value.lower()
+        if value and marker not in seen:
+            seen.add(marker)
+            output.append(value)
+    return output[:limit]
+
+
+def resume_insights_from_profile(profile: dict) -> dict:
+    primary_skills = dashboard_items(profile, "primary_skills", 12)
+    secondary_skills = dashboard_items(profile, "secondary_skills", 8)
+    domains = dashboard_items(profile, "domains", 8)
+    target_roles = dashboard_items(profile, "target_roles", 6)
+    keywords = dashboard_items(profile, "keywords", 12)
+    summary = clean_dashboard_text(profile.get("summary", ""))
+    seniority = clean_dashboard_text(profile.get("seniority", ""))
+    years = clean_dashboard_text(profile.get("total_years_experience", ""))
+    position = clean_dashboard_text(profile.get("current_position", ""))
+    company = clean_dashboard_text(profile.get("current_company", ""))
+
+    if not summary:
+        proof = ", ".join(primary_skills[:4] or keywords[:4])
+        role = target_roles[0] if target_roles else position or "the target role"
+        summary = (
+            f"Profile aligns well with {role} opportunities, with strongest evidence around {proof}."
+            if proof
+            else "Upload a richer resume or enable OpenAI parsing to generate deeper profile insight."
+        )
+
+    overview_bits = []
+    if years:
+        overview_bits.append(f"{years} years of experience" if "year" not in years.lower() else years)
+    if seniority:
+        overview_bits.append(seniority)
+    if position:
+        overview_bits.append(position)
+    if company:
+        overview_bits.append(f"current company: {company}")
+
+    return {
+        "overview": " | ".join(overview_bits) or "Profile overview will improve after the resume parser extracts more structured details.",
+        "summary": summary,
+        "strong_skills": primary_skills or keywords[:10],
+        "supporting_skills": secondary_skills,
+        "domains": domains,
+        "best_match_roles": target_roles[:5] or ([position] if position else []),
+    }
+
+
+def configured_profile_cache_path(config: dict) -> Path:
+    return resolve_config_path(config.get("llm_resume_parser", {}).get("cache_path", "data/resume_profile.json"))
+
+
+def load_resume_insights_for_dashboard() -> dict:
+    latest_path = DATA_DIR / "latest_jobs.json"
+    if latest_path.exists():
+        try:
+            payload = json.loads(latest_path.read_text(encoding="utf-8"))
+            insights = payload.get("resume_insights")
+            if isinstance(insights, dict):
+                return insights
+        except Exception:
+            pass
+
+    try:
+        config = load_config()
+        profile_path = configured_profile_cache_path(config)
+        if profile_path.exists():
+            payload = json.loads(profile_path.read_text(encoding="utf-8"))
+            profile = payload.get("profile") if isinstance(payload, dict) else None
+            if isinstance(profile, dict):
+                return resume_insights_from_profile(profile)
+    except Exception:
+        pass
+    return {}
+
+
+def insight_chips(values: list[str], muted: bool = False, empty: str = "") -> str:
+    items = []
+    class_name = "insight-chip muted" if muted else "insight-chip"
+    for value in values:
+        items.append(f'<span class="{class_name}">{html_escape(str(value))}</span>')
+    if not items and empty:
+        return f'<span class="insight-empty">{html_escape(empty)}</span>'
+    return "".join(items)
+
+
+def render_resume_insights_html(insights: dict) -> str:
+    strong = insight_chips(list(insights.get("strong_skills", []) or [])[:10], empty="No strong skills extracted yet.")
+    supporting = insight_chips(list(insights.get("supporting_skills", []) or [])[:8], muted=True)
+    domains = insight_chips(list(insights.get("domains", []) or [])[:8], muted=True)
+    signals = supporting + domains or '<span class="insight-empty">No supporting signals extracted yet.</span>'
+    roles = "".join(
+        f"<li>{html_escape(str(role))}</li>" for role in list(insights.get("best_match_roles", []) or [])[:5]
+    ) or "<li>Run resume parsing to infer recommended roles.</li>"
+    return f"""
+  <section class="resume-insights" id="resumeInsights">
+    <div class="resume-insights-inner">
+      <div class="insight-grid">
+        <article class="insight-panel">
+          <p class="eyebrow">Resume insights</p>
+          <h2>Profile overview</h2>
+          <p class="insight-overview">{html_escape(str(insights.get("overview") or ""))}</p>
+          <p class="insight-copy">{html_escape(str(insights.get("summary") or ""))}</p>
+        </article>
+        <aside class="insight-panel insight-groups" aria-label="Resume skill and role insights">
+          <div>
+            <h3>Strong skill set</h3>
+            <div class="insight-chip-row">{strong}</div>
+          </div>
+          <div>
+            <h3>Supporting signals</h3>
+            <div class="insight-chip-row">{signals}</div>
+          </div>
+          <div>
+            <h3>Best match roles</h3>
+            <ol class="role-list">{roles}</ol>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>"""
+
+
+def inject_resume_insights(html_text: str) -> str:
+    insights = load_resume_insights_for_dashboard()
+    if not insights:
+        return html_text
+    if ".resume-insights {" not in html_text:
+        css = """
+    .resume-insights { border-bottom: 1px solid rgba(255,210,31,.14); background: #080808; }
+    .resume-insights-inner { width: min(1240px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0; }
+    .insight-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr); gap: 16px; }
+    .insight-panel { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }
+    .insight-panel h2, .insight-panel h3 { margin: 0; color: var(--accent); letter-spacing: 0; }
+    .insight-panel h2 { font-size: 1.05rem; }
+    .insight-panel h3 { font-size: .86rem; text-transform: uppercase; }
+    .insight-overview { margin: 10px 0 0; color: rgba(255,255,255,.86); font-size: 1rem; }
+    .insight-copy { margin: 10px 0 0; color: var(--muted); }
+    .insight-groups { display: grid; gap: 14px; }
+    .insight-chip-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+    .insight-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 5px 9px; border: 1px solid rgba(255,210,31,.3); border-radius: 999px; color: var(--accent); background: rgba(255,210,31,.06); font-size: 12px; font-weight: 850; }
+    .insight-chip.muted { color: rgba(255,255,255,.78); border-color: var(--line); background: rgba(255,255,255,.04); }
+    .insight-empty { color: var(--muted); font-size: 12px; }
+    .role-list { margin: 10px 0 0; padding-left: 18px; color: rgba(255,255,255,.86); }
+    .role-list li { margin: 5px 0; }
+"""
+        if "    main {" in html_text:
+            html_text = html_text.replace("    main {", f"{css}    main {{", 1)
+        else:
+            html_text = html_text.replace("</style>", f"{css}  </style>", 1)
+    if "@media (max-width: 820px)" in html_text and ".insight-grid { grid-template-columns: 1fr; }" not in html_text:
+        html_text = html_text.replace(
+            "      .hero-stats { grid-template-columns: 1fr; }",
+            "      .hero-stats { grid-template-columns: 1fr; }\n      .insight-grid { grid-template-columns: 1fr; }",
+            1,
+        )
+    if 'id="resumeInsights"' not in html_text:
+        section = render_resume_insights_html(insights)
+        html_text = html_text.replace("  <main>", f"{section}\n  <main>", 1)
     return html_text
 
 
