@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -25,10 +26,10 @@ CONFIG_PATH = Path(
     os.environ.get(
         "JOB_AGENT_CONFIG",
         str(REPO_DIR / "config.json" if (REPO_DIR / "config.json").exists() else BASE_DIR / "config.json"),
-    )
+)
 ).expanduser()
 DATA_DIR = CONFIG_PATH.parent / "data"
-OUTPUT_PATH = DATA_DIR / "chandan_ghosh_ats_java_backend_resume.docx"
+DEFAULT_OUTPUT_PATH = DATA_DIR / "tailored_resume.docx"
 
 TAILORING_STOPWORDS = {
     "and", "are", "but", "can", "for", "from", "has", "have", "into", "our",
@@ -99,10 +100,36 @@ def response_text(response: Dict[str, Any]) -> str:
     return "".join(chunks) or response.get("output_text", "")
 
 
+def resume_cache_key(resume_path: Path, config: Dict[str, Any]) -> str:
+    stat = resume_path.stat() if resume_path.exists() else None
+    digest = ""
+    if resume_path.exists():
+        hasher = hashlib.sha256()
+        with resume_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
+    raw = {
+        "extract_version": 2,
+        "path": str(resume_path.resolve() if resume_path.exists() else resume_path),
+        "size": stat.st_size if stat else 0,
+        "mtime_ns": stat.st_mtime_ns if stat else 0,
+        "sha256": digest,
+        "model": config.get("llm_resume_parser", {}).get("model", ""),
+    }
+    return hashlib.sha256(json.dumps(raw, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def extract_resume(resume_path: Path, config: Dict[str, Any]) -> Dict[str, Any]:
     cache = DATA_DIR / "resume_full_ats_extract.json"
+    cache_key = resume_cache_key(resume_path, config)
     if cache.exists():
-        return json.loads(cache.read_text(encoding="utf-8"))
+        try:
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+            if cached.get("cache_key") == cache_key and isinstance(cached.get("data"), dict):
+                return cached["data"]
+        except Exception:
+            pass
 
     load_env_file(CONFIG_PATH.parent / ".env")
     load_env_file(BASE_DIR / ".env")
@@ -143,8 +170,7 @@ def extract_resume(resume_path: Path, config: Dict[str, Any]) -> Dict[str, Any]:
     prompt = (
         "Extract the candidate's resume content faithfully from the attached PDF. "
         "Do not invent employers, dates, degrees, certifications, metrics, or contact details. "
-        "Rewrite bullets only to be clearer and ATS-friendly for Senior Java Backend Engineer, "
-        "Spring Boot, microservices, REST API, Kafka, Docker, Kubernetes, AWS/Azure, CI/CD roles. "
+        "Rewrite bullets only to be clearer and ATS-friendly while preserving the candidate's actual scope, domain, and seniority. "
         "Keep each bullet under 28 words. Preserve the candidate's actual facts."
     )
     file_data = base64.b64encode(resume_path.read_bytes()).decode("ascii")
@@ -175,7 +201,7 @@ def extract_resume(resume_path: Path, config: Dict[str, Any]) -> Dict[str, Any]:
     }
     data = json.loads(response_text(post_json("https://api.openai.com/v1/responses", payload, api_key)))
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    cache.write_text(json.dumps({"cache_key": cache_key, "data": data}, indent=2, ensure_ascii=False), encoding="utf-8")
     return data
 
 
@@ -219,6 +245,27 @@ def add_bullet(doc: Document, text: str) -> None:
 def safe_filename(value: str) -> str:
     value = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
     return value[:90] or "resume"
+
+
+def candidate_slug(data: Dict[str, Any]) -> str:
+    name = clean_phrase(data.get("name"))
+    if not name:
+        name = "candidate"
+    return safe_filename(name).lower()
+
+
+def tailored_resume_filename(data: Dict[str, Any], target_job: Optional[Dict[str, Any]] = None, job_id: Optional[str] = None) -> str:
+    parts = [candidate_slug(data), "tailored_resume"]
+    if target_job:
+        company = safe_filename(clean_phrase(target_job.get("company", ""))).lower()
+        title = safe_filename(clean_phrase(target_job.get("title", ""))).lower()
+        if company:
+            parts.append(company)
+        if title:
+            parts.append(title)
+    if job_id:
+        parts.append(safe_filename(job_id)[-18:].lower())
+    return "_".join(part for part in parts if part) + ".docx"
 
 
 def load_latest_job(job_id: str, latest_jobs_path: Path) -> Dict[str, Any]:
@@ -340,15 +387,18 @@ def ranked_items(items: Sequence[str], terms: Sequence[str], limit: int) -> List
     return ordered[:limit]
 
 
-def role_focus_title(title: str, focus_terms: Sequence[str]) -> str:
+def role_focus_title(base_headline: str, title: str, focus_terms: Sequence[str]) -> str:
+    base = clean_phrase(base_headline) or "Experienced professional"
     focus = " | ".join(focus_terms[:4])
     if focus:
-        return f"Senior Software Engineer | {focus} | Target: {title}"
-    return f"Senior Software Engineer | Target: {title}"
+        return f"{base} | {focus} | Target: {title}"
+    return f"{base} | Target: {title}"
 
 
 def tailored_summary(
     original: str,
+    headline: str,
+    supported: Sequence[str],
     title: str,
     focus_terms: Sequence[str],
     role_fit: Sequence[str],
@@ -356,10 +406,12 @@ def tailored_summary(
 ) -> str:
     focus = ", ".join(focus_terms[:8])
     proof = role_fit[0] if role_fit else ""
-    base = (
-        "Senior Software Engineer with 13+ years of experience in Java/JEE, backend systems, "
-        "microservices, cloud-native delivery, CI/CD, and production-scale engineering."
-    )
+    base = clean_phrase(original)
+    if not base:
+        skill_text = ", ".join(unique_phrases(supported)[:8])
+        base = clean_phrase(headline) or "Experienced professional"
+        if skill_text:
+            base = f"{base} with proven experience across {skill_text}."
     if focus and limited_overlap:
         base += f" This posting has limited direct keyword overlap, so this version emphasizes the closest truthful strengths: {focus}."
     elif focus:
@@ -411,9 +463,7 @@ def tailor_for_job(data: Dict[str, Any], job: Optional[Dict[str, Any]]) -> Dict[
     job_first_skills = list(job_focus_skills)
     job_first_skills.extend(term for term in supported if normalize_key(term) not in {normalize_key(item) for item in job_first_skills})
     limited_overlap = not bool(job_focus_skills)
-    ranking_terms = non_generic_terms if non_generic_terms else [
-        "Java", "Spring Boot", "Microservices", "REST APIs", "Cloud", "CI/CD", "Performance"
-    ]
+    ranking_terms = non_generic_terms if non_generic_terms else unique_phrases(supported)[:8]
     tailored_experience, role_fit = tailor_experience(tailored, ranking_terms)
     focus_terms = unique_phrases(job_focus_skills)[:12] or unique_phrases(job_first_skills)[:6]
     tailored["skills"] = unique_phrases(job_first_skills)[:30] + [
@@ -421,8 +471,8 @@ def tailor_for_job(data: Dict[str, Any], job: Optional[Dict[str, Any]]) -> Dict[
     ]
     tailored["experience"] = tailored_experience
     tailored["role_fit_bullets"] = role_fit
-    tailored["headline"] = role_focus_title(title, focus_terms)
-    tailored["summary"] = tailored_summary(tailored.get("summary", ""), title, focus_terms, role_fit, limited_overlap)
+    tailored["headline"] = role_focus_title(tailored.get("headline", ""), title, focus_terms)
+    tailored["summary"] = tailored_summary(tailored.get("summary", ""), tailored.get("headline", ""), supported, title, focus_terms, role_fit, limited_overlap)
     return tailored
 
 
@@ -442,7 +492,7 @@ def build_docx(data: Dict[str, Any], output_path: Path, target_job: Optional[Dic
     normal.font.size = Pt(9.2)
     normal.paragraph_format.space_after = Pt(2)
 
-    name = data.get("name") or "Chandan Ghosh"
+    name = data.get("name") or "Candidate"
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title.paragraph_format.space_after = Pt(0)
@@ -455,7 +505,7 @@ def build_docx(data: Dict[str, Any], output_path: Path, target_job: Optional[Dic
     headline = doc.add_paragraph()
     headline.alignment = WD_ALIGN_PARAGRAPH.CENTER
     headline.paragraph_format.space_after = Pt(1)
-    run = headline.add_run(data.get("headline") or "Senior Java Backend Engineer | Spring Boot | Microservices | Cloud-Native Systems")
+    run = headline.add_run(data.get("headline") or "Experienced professional")
     run.bold = True
     run.font.size = Pt(9.5)
 
@@ -554,7 +604,13 @@ def build_docx(data: Dict[str, Any], output_path: Path, target_job: Optional[Dic
 
 
 def build_resume_for_job(job_id: Optional[str] = None, output_path: Optional[Path] = None) -> Path:
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    try:
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON in {CONFIG_PATH}: line {exc.lineno}, column {exc.colno}. "
+            "Check for a missing quote or comma, especially around resume_path."
+        ) from exc
     resume_path = Path(config["resume_path"]).expanduser()
     if not resume_path.is_absolute():
         resume_path = CONFIG_PATH.parent / resume_path
@@ -564,9 +620,9 @@ def build_resume_for_job(job_id: Optional[str] = None, output_path: Optional[Pat
         target_job = load_latest_job(job_id, DATA_DIR / "latest_jobs.json")
     if output_path is None:
         if target_job:
-            output_path = DATA_DIR / "generated_resumes" / f"chandan_ghosh_{safe_filename(target_job.get('title', job_id))}_{job_id}.docx"
+            output_path = DATA_DIR / "generated_resumes" / tailored_resume_filename(data, target_job, job_id)
         else:
-            output_path = OUTPUT_PATH
+            output_path = DATA_DIR / tailored_resume_filename(data)
     build_docx(data, output_path, target_job)
     return output_path
 

@@ -110,7 +110,15 @@ path = Path(sys.argv[1])
 if not path.exists():
     print("8765")
     raise SystemExit
-config = json.loads(path.read_text(encoding="utf-8"))
+try:
+    config = json.loads(path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    print(
+        f"Invalid JSON in {path}: line {exc.lineno}, column {exc.colno}. "
+        "Please fix config.json. Common issue: missing quote or comma in resume_path.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 print(config.get("dashboard", {}).get("port", 8765))
 PY
 )"

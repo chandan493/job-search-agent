@@ -29,7 +29,7 @@ CONFIG_PATH = Path(
 ).expanduser()
 DATA_DIR = CONFIG_PATH.parent / "data"
 LOCAL_VENV_PYTHON = BASE_DIR / ".venv" / "bin" / "python"
-BUNDLED_PYTHON = Path("/Users/chandan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3")
+BUNDLED_PYTHON = Path(os.environ["JOB_AGENT_BUNDLED_PYTHON"]).expanduser() if os.environ.get("JOB_AGENT_BUNDLED_PYTHON") else None
 RUN_LOCK = threading.Lock()
 SOURCE_LABELS = {
     "jobicy": "Jobicy",
@@ -54,7 +54,13 @@ SOURCE_LABELS = {
 
 
 def load_config() -> dict:
-    return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON in {CONFIG_PATH}: line {exc.lineno}, column {exc.colno}. "
+            "Check for a missing quote or comma, especially around resume_path."
+        ) from exc
 
 
 def write_config(config: dict) -> None:
@@ -175,7 +181,7 @@ def python_executable() -> str:
         return configured
     if LOCAL_VENV_PYTHON.exists():
         return str(LOCAL_VENV_PYTHON)
-    if BUNDLED_PYTHON.exists():
+    if BUNDLED_PYTHON and BUNDLED_PYTHON.exists():
         return str(BUNDLED_PYTHON)
     return sys.executable
 
@@ -347,27 +353,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not job:
             self.send_text(404, f"Job not found in latest run: {job_id}")
             return
-        output_dir = DATA_DIR / "generated_resumes"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output = output_dir / safe_download_name(f"Chandan_Ghosh_ATS_{job.get('company','')}_{job.get('title','')}_{job_id}")
         cmd = [
             python_executable(),
             str(BASE_DIR / "build_ats_resume.py"),
             "--job-id",
             job_id,
-            "--output",
-            str(output),
         ]
         env = os.environ.copy()
         env["JOB_AGENT_CONFIG"] = str(CONFIG_PATH)
         try:
-            subprocess.run(cmd, cwd=str(BASE_DIR.parent), check=True, capture_output=True, text=True, timeout=180, env=env)
+            result = subprocess.run(cmd, cwd=str(BASE_DIR.parent), check=True, capture_output=True, text=True, timeout=180, env=env)
         except subprocess.CalledProcessError as exc:
             self.send_text(500, f"Resume generation failed:\n{exc.stderr or exc.stdout}")
             return
         except Exception as exc:
             self.send_text(500, f"Resume generation failed: {exc}")
             return
+        output_text = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+        output = Path(output_text).expanduser() if output_text else DATA_DIR / "generated_resumes" / safe_download_name(f"tailored_resume_{job_id}")
+        if not output.is_absolute():
+            output = BASE_DIR.parent / output
         self.serve_file(
             output,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

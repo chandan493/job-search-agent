@@ -142,8 +142,13 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         raise FileNotFoundError(
             f"Missing {config_path}. Copy config.example.json to config.json and edit it."
         )
-    with config_path.open("r", encoding="utf-8") as f:
-        config = json.load(f)
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON in {config_path}: line {exc.lineno}, column {exc.colno}. "
+            "Check for a missing quote or comma, especially around resume_path."
+        ) from exc
     return config
 
 
@@ -366,12 +371,20 @@ def infer_resume_profile_local(text: str) -> Dict[str, Any]:
 
 def cache_key_for_resume(path: Path, config: Dict[str, Any]) -> str:
     stat = path.stat() if path.exists() else None
+    digest = ""
+    if path.exists():
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
     llm = config.get("llm_resume_parser", {})
     raw = {
-        "parser_version": 4,
-        "path": str(path),
+        "parser_version": 5,
+        "path": str(path.resolve() if path.exists() else path),
         "size": stat.st_size if stat else 0,
-        "mtime": int(stat.st_mtime) if stat else 0,
+        "mtime_ns": stat.st_mtime_ns if stat else 0,
+        "sha256": digest,
         "model": llm.get("model", ""),
         "enabled": bool(llm.get("enabled", False)),
     }
