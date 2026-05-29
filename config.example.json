@@ -1,0 +1,74 @@
+{
+  "resume_path": "/absolute/path/to/your_resume.pdf",
+  "output_xlsx": "data/job_matches.xlsx",
+  "database_path": "data/seen_jobs.sqlite3",
+  "timezone": "Asia/Kolkata",
+  "expected_salary": {
+    "amount": 9000000,
+    "currency": "INR",
+    "period": "year"
+  },
+  "salary_conversion": {
+    "target_currency": "INR",
+    "fetch_live_rate": true,
+    "usd_to_inr_fallback": 95.81
+  },
+  "dashboard": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "llm_resume_parser": {
+    "enabled": true,
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "api_key_env": "OPENAI_API_KEY",
+    "send_pdf_file": true,
+    "cache": true,
+    "cache_path": "data/resume_profile.json"
+  },
+  "search": {
+    "roles": [
+      "software engineer",
+      "full stack developer",
+      "backend engineer"
+    ],
+    "locations": [
+      "remote",
+      "Bangalore",
+      "India",
+      "Hyderabad"
+    ],
+    "required_keywords": [],
+    "excluded_keywords": [
+      "unpaid",
+      "internship"
+    ],
+    "min_score": 2,
+    "freshness": "today"
+  },
+  "sources": {
+    "jobicy": true,
+    "remotejobsorg": true,
+    "remoteok": true,
+    "remotive": true,
+    "arbeitnow": true,
+    "careernest": true,
+    "workanywhere": false,
+    "adzuna": false,
+    "jobsora": true,
+    "shine": true,
+    "indeed_india": false,
+    "naukri": false,
+    "instahyre": false,
+    "foundit": false,
+    "timesjobs": false,
+    "cutshort": false,
+    "hirist": false,
+    "apna": false
+  },
+  "adzuna": {
+    "app_id": "",
+    "app_key": ""
+  }
+}
