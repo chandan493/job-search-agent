@@ -1,5 +1,5 @@
 {
-  "resume_path": "/absolute/path/to/your_resume.pdf",
+  "resume_path": "",
   "output_xlsx": "data/job_matches.xlsx",
   "database_path": "data/seen_jobs.sqlite3",
   "timezone": "Asia/Kolkata",

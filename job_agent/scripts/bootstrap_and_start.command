@@ -90,7 +90,7 @@ if [[ ! -f "$CONFIG_PATH" && -f "$EXAMPLE_CONFIG" ]]; then
   finish_progress_line
   cp "$EXAMPLE_CONFIG" "$CONFIG_PATH"
   echo "Created $CONFIG_PATH from the example config."
-  echo "Update resume_path and salary preferences when you are ready."
+  echo "The app will ask you to upload a resume on first launch."
 fi
 
 if [[ ! -f "$ENV_PATH" && -f "$EXAMPLE_ENV" ]]; then
@@ -126,12 +126,6 @@ SERVER_PORT="$PORT"
 
 mkdir -p "$LOG_DIR"
 cd "$REPO_DIR"
-
-if [[ -f "$CONFIG_PATH" ]]; then
-  JOB_AGENT_CONFIG="$CONFIG_PATH" JOB_AGENT_PYTHON="$VENV_PYTHON" run_with_progress 35 82 85 "Running fresh job search" "$VENV_PYTHON" "$APP_DIR/job_agent.py" --config "$CONFIG_PATH" || {
-    echo "Fresh job search failed. Starting dashboard anyway so you can inspect the setup."
-  }
-fi
 
 if /usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   SERVER_PORT="$(

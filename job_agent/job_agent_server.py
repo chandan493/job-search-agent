@@ -210,6 +210,18 @@ def config_relative_path(path: Path) -> str:
         return str(path)
 
 
+def configured_resume_path(config: dict) -> Path | None:
+    value = str(config.get("resume_path") or "").strip()
+    if not value or value.startswith("/absolute/path/to/"):
+        return None
+    return resolve_config_path(value)
+
+
+def has_configured_resume(config: dict) -> bool:
+    path = configured_resume_path(config)
+    return bool(path and path.exists() and path.is_file())
+
+
 class ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
@@ -236,6 +248,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_html(self, status: int, html_text: str) -> None:
+        payload = html_text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def serve_file(self, path: Path, content_type: str | None = None, download_name: str | None = None) -> None:
         if not path.exists():
             self.send_text(404, f"Not found: {path}")
@@ -250,19 +270,179 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def serve_dashboard(self) -> None:
+        try:
+            config = load_config()
+        except Exception as exc:
+            self.send_text(500, str(exc))
+            return
         path = DATA_DIR / "latest_jobs.html"
-        if not path.exists():
-            self.send_text(404, f"Not found: {path}")
+        if not has_configured_resume(config) or not path.exists():
+            self.serve_resume_wizard(config)
             return
         text = path.read_text(encoding="utf-8", errors="replace")
         text = rebase_dashboard_resume_links(text)
         text = inject_dashboard_run_control(text)
-        payload = text.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        self.send_html(200, text)
+
+    def serve_resume_wizard(self, config: dict) -> None:
+        current_resume = configured_resume_path(config)
+        current_label = current_resume.name if current_resume and current_resume.exists() else "No resume uploaded yet"
+        html_text = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Job Agent - Upload Resume</title>
+  <style>
+    :root {{
+      --ink: #ffffff; --muted: #b8b8b8; --paper: #050505; --panel: #101010;
+      --line: #2c2c2c; --accent: #ffd21f; --accent-strong: #f2b705;
+      --shadow: 0 18px 50px rgba(0,0,0,.45);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ min-height: 100vh; margin: 0; color: var(--ink); background: var(--paper); display: grid; place-items: center; padding: 20px; }}
+    .wizard {{ width: min(620px, 100%); display: grid; gap: 18px; }}
+    .brand {{ display: inline-flex; align-items: center; gap: 12px; font-weight: 950; }}
+    .brand-mark {{ width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: var(--accent); color: #050505; }}
+    .panel {{ border: 1px solid rgba(255,210,31,.24); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden; }}
+    .panel-head {{ padding: 18px; border-bottom: 1px solid var(--line); }}
+    h1 {{ margin: 0; color: var(--accent); font-size: clamp(2rem, 7vw, 4.2rem); line-height: .95; letter-spacing: 0; }}
+    .copy {{ margin: 12px 0 0; color: rgba(255,255,255,.78); font-size: 1rem; }}
+    .body {{ display: grid; gap: 14px; padding: 18px; }}
+    .dropzone {{ min-height: 190px; display: grid; place-items: center; gap: 8px; padding: 22px; border: 1px dashed rgba(255,210,31,.5); border-radius: 8px; background: rgba(255,255,255,.04); cursor: pointer; text-align: center; }}
+    .dropzone.is-dragging {{ border-color: var(--accent); background: rgba(255,210,31,.09); }}
+    .dropzone strong {{ display: block; color: var(--accent); font-size: 17px; }}
+    .dropzone span {{ display: block; color: var(--muted); font-size: 12px; }}
+    .meta {{ color: var(--muted); font-size: 12px; }}
+    .actions {{ display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); }}
+    .button {{ min-height: 40px; border: 1px solid transparent; border-radius: 8px; padding: 10px 13px; font: inherit; font-weight: 950; cursor: pointer; }}
+    .button.primary {{ color: #050505; background: var(--accent); }}
+    .button.primary:hover {{ background: var(--accent-strong); }}
+    .button.secondary {{ color: var(--ink); border-color: rgba(255,210,31,.42); background: rgba(255,255,255,.06); }}
+    .button:disabled {{ cursor: wait; opacity: .7; }}
+    .loader {{ --progress-angle: 3.6deg; display: none; align-items: center; gap: 10px; color: var(--accent); font-weight: 950; }}
+    .loader.is-active {{ display: inline-flex; }}
+    .ring {{ position: relative; width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--accent) var(--progress-angle), rgba(255,255,255,.14) 0); }}
+    .ring::after {{ content: ""; position: absolute; width: 30px; height: 30px; border-radius: 50%; background: #050505; }}
+    .percent {{ position: relative; z-index: 1; color: var(--ink); font-size: 10px; }}
+  </style>
+</head>
+<body>
+  <main class="wizard">
+    <div class="brand"><span class="brand-mark">JA</span><span>Job Agent</span></div>
+    <section class="panel">
+      <div class="panel-head">
+        <h1>Upload your resume</h1>
+        <p class="copy">Start by adding a resume. Job Agent will parse it, find matching jobs, and build your dashboard.</p>
+      </div>
+      <form id="resumeUploadForm">
+        <div class="body">
+          <label class="dropzone" id="resumeDropzone" for="resumeUploadInput">
+            <input id="resumeUploadInput" name="resume" type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" hidden>
+            <span><strong>Drop your resume here</strong><span>PDF, DOCX, or TXT</span></span>
+          </label>
+          <div class="meta" id="resumeFileName">{html_escape(current_label)}</div>
+          <div class="loader" id="wizardLoader" aria-live="polite">
+            <span class="ring" id="wizardRing"><span class="percent" id="wizardPercent">1%</span></span>
+            <span id="wizardMessage">Waiting for resume</span>
+          </div>
+          <div class="meta" id="wizardStatus"></div>
+        </div>
+        <div class="actions">
+          <button class="button primary" id="resumeUploadSubmitButton" type="submit">Upload and run</button>
+        </div>
+      </form>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById('resumeUploadForm');
+    const input = document.getElementById('resumeUploadInput');
+    const dropzone = document.getElementById('resumeDropzone');
+    const fileName = document.getElementById('resumeFileName');
+    const statusEl = document.getElementById('wizardStatus');
+    const loader = document.getElementById('wizardLoader');
+    const ring = document.getElementById('wizardRing');
+    const percent = document.getElementById('wizardPercent');
+    const message = document.getElementById('wizardMessage');
+    const submit = document.getElementById('resumeUploadSubmitButton');
+    let timer = null;
+    let progress = 1;
+    function selectedFile() {{ return input.files && input.files[0]; }}
+    function updateFileName() {{ const file = selectedFile(); fileName.textContent = file ? file.name : '{html_escape(current_label)}'; }}
+    function setProgress(value, label) {{
+      progress = Math.max(1, Math.min(100, Math.round(value)));
+      loader.classList.add('is-active');
+      ring.style.setProperty('--progress-angle', `${{progress * 3.6}}deg`);
+      percent.textContent = `${{progress}}%`;
+      if (label) message.textContent = label;
+    }}
+    function startProgress(label) {{
+      stopProgress(false);
+      setProgress(1, label || 'Uploading resume');
+      timer = window.setInterval(() => {{
+        const step = progress < 70 ? 3 : progress < 94 ? 2 : 1;
+        if (progress < 98) setProgress(progress + step);
+      }}, 650);
+    }}
+    function stopProgress(hide = true) {{
+      if (timer) window.clearInterval(timer);
+      timer = null;
+      if (hide) loader.classList.remove('is-active');
+    }}
+    async function uploadAndRun(event) {{
+      event.preventDefault();
+      const file = selectedFile();
+      if (!file) {{ statusEl.textContent = 'Choose a resume file first.'; return; }}
+      const name = file.name.toLowerCase();
+      if (!['.pdf', '.docx', '.txt'].some((suffix) => name.endsWith(suffix))) {{
+        statusEl.textContent = 'Upload a PDF, DOCX, or TXT resume.';
+        return;
+      }}
+      submit.disabled = true;
+      statusEl.textContent = '';
+      startProgress('Uploading resume');
+      try {{
+        const formData = new FormData();
+        formData.append('resume', file);
+        const uploadResponse = await fetch('/resume-upload', {{ method: 'POST', body: formData }});
+        const uploadPayload = await uploadResponse.json();
+        if (!uploadResponse.ok || !uploadPayload.ok) throw new Error(uploadPayload.message || 'Resume upload failed');
+        setProgress(28, 'Parsing resume');
+        const runResponse = await fetch('/run-agent', {{ method: 'POST' }});
+        const runPayload = await runResponse.json();
+        if (!runResponse.ok || !runPayload.ok) throw new Error(runPayload.message || runPayload.stderr || 'Fresh report failed');
+        stopProgress(false);
+        setProgress(100, 'Opening dashboard');
+        window.setTimeout(() => window.location.reload(), 500);
+      }} catch (error) {{
+        stopProgress();
+        statusEl.textContent = error.message || 'Resume upload failed';
+        submit.disabled = false;
+      }}
+    }}
+    input.addEventListener('change', updateFileName);
+    form.addEventListener('submit', uploadAndRun);
+    ['dragenter', 'dragover'].forEach((name) => dropzone.addEventListener(name, (event) => {{
+      event.preventDefault();
+      dropzone.classList.add('is-dragging');
+    }}));
+    ['dragleave', 'drop'].forEach((name) => dropzone.addEventListener(name, (event) => {{
+      event.preventDefault();
+      dropzone.classList.remove('is-dragging');
+    }}));
+    dropzone.addEventListener('drop', (event) => {{
+      const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+      if (!file) return;
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      updateFileName();
+    }});
+  </script>
+</body>
+</html>"""
+        self.send_html(200, html_text)
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)

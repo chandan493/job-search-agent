@@ -1,0 +1,10 @@
+.env
+config.json
+*.log
+__pycache__/
+.DS_Store
+data/generated_resumes/
+data/uploaded_resumes/
+data/latest_jobs.html
+data/latest_jobs.json
+data/resume_full_ats_extract.json
