@@ -1,8 +1,16 @@
+# Local secrets and config
 config.json
 .env
+
+# Generated outputs
 data/
 logs/
+
+# Local runtime
+.venv/
 __pycache__/
 *.pyc
-.venv/
-!data/latest_jobs.html
+*.pyo
+
+# OS noise
+.DS_Store

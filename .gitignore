@@ -1,10 +1,32 @@
+# Local secrets and user config
 .env
+.env.*
+!.env.example
 config.json
-*.log
+!config.example.json
+job_agent/config.json
+job_agent/.env
+
+# Generated app data
+data/
+job_agent/data/
+job_agent/logs/
+
+# Local runtimes and caches
+.venv/
+job_agent/.venv/
 __pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Build/distribution output
+dist/
+*.zip
+
+# Logs and OS/editor noise
+*.log
 .DS_Store
-data/generated_resumes/
-data/uploaded_resumes/
-data/latest_jobs.html
-data/latest_jobs.json
-data/resume_full_ats_extract.json
+Thumbs.db
+.idea/
+.vscode/
