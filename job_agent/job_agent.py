@@ -1783,15 +1783,22 @@ def write_latest_jobs_outputs(
     .keywords {{ color: rgba(255,255,255,.76); }}
     .empty {{ display: none; padding: 26px; text-align: center; color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }}
     .count {{ color: var(--accent); font-weight: 950; }}
+    .site-footer {{ border-top: 1px solid rgba(255,210,31,.14); background: #080808; }}
+    .site-footer-inner {{ width: min(1240px, calc(100% - 32px)); margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; color: var(--muted); font-size: 12px; }}
+    .site-footer a {{ color: var(--accent); font-weight: 850; text-decoration: none; }}
+    .site-footer a:hover {{ color: var(--accent-strong); }}
     @media (max-width: 820px) {{
-      .nav {{ min-height: 62px; }}
-      .nav-actions {{ gap: 8px; }}
+      .nav {{ min-height: 62px; flex-wrap: wrap; gap: 10px; padding: 10px 0; }}
+      .nav-actions {{ width: 100%; flex-wrap: wrap; gap: 8px; padding-bottom: 2px; }}
+      .brand-name {{ font-size: 15px; }}
+      .button {{ min-height: 36px; padding: 8px 10px; }}
       .run-status {{ display: none; }}
       .run-loader-label {{ display: none; }}
       .hero-content {{ padding-top: 46px; }}
       .hero-stats {{ grid-template-columns: 1fr; }}
       .insight-grid {{ grid-template-columns: 1fr; }}
       .controls {{ grid-template-columns: 1fr; }}
+      .site-footer-inner {{ flex-direction: column; align-items: flex-start; }}
     }}
   </style>
 </head>
@@ -1879,6 +1886,12 @@ def write_latest_jobs_outputs(
     </div>
     <div class="empty" id="emptyState">No jobs match those filters.</div>
   </main>
+  <footer class="site-footer" data-roleforge-footer>
+    <div class="site-footer-inner">
+      <span>&copy; {run_date.year} RoleForge. All rights reserved.</span>
+      <span>Developed by Chandan Ghosh: <a href="https://www.linkedin.com/in/chandan-ghosh-43350650/" target="_blank" rel="noopener">https://www.linkedin.com/in/chandan-ghosh-43350650/</a></span>
+    </div>
+  </footer>
   <div class="resume-download-overlay" id="resumeDownloadOverlay" aria-live="polite" aria-modal="true" role="dialog" aria-label="Preparing tailored resume">
     <div class="resume-download-panel">
       <div class="resume-download-ring" id="resumeDownloadRing"><span class="resume-download-percent" id="resumeDownloadPercent">1%</span></div>

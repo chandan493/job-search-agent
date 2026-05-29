@@ -292,7 +292,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Job Agent - Upload Resume</title>
+  <title>RoleForge - Upload Resume</title>
   <style>
     :root {{
       --ink: #ffffff; --muted: #b8b8b8; --paper: #050505; --panel: #101010;
@@ -304,7 +304,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     body {{ min-height: 100vh; margin: 0; color: var(--ink); background: var(--paper); display: grid; place-items: center; padding: 20px; }}
     .wizard {{ width: min(620px, 100%); display: grid; gap: 18px; }}
     .brand {{ display: inline-flex; align-items: center; gap: 12px; font-weight: 950; }}
-    .brand-mark {{ width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: var(--accent); color: #050505; }}
+    .brand-name {{ color: var(--ink); font-weight: 950; white-space: nowrap; }}
+    .brand-mark {{ position: relative; width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; overflow: hidden; border-radius: 10px; background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: #050505; font-size: 13px; font-weight: 950; box-shadow: 0 12px 28px rgba(255,210,31,.16); }}
+    .brand-mark::before {{ content: ""; position: absolute; inset: 7px; border: 2px solid rgba(5,5,5,.24); border-radius: 7px; transform: rotate(-8deg); }}
+    .brand-mark::after {{ content: ""; position: absolute; right: 7px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: rgba(5,5,5,.66); box-shadow: -14px 16px 0 rgba(5,5,5,.36); }}
     .panel {{ border: 1px solid rgba(255,210,31,.24); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden; }}
     .panel-head {{ padding: 18px; border-bottom: 1px solid var(--line); }}
     h1 {{ margin: 0; color: var(--accent); font-size: clamp(2rem, 7vw, 4.2rem); line-height: .95; letter-spacing: 0; }}
@@ -330,11 +333,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 </head>
 <body>
   <main class="wizard">
-    <div class="brand"><span class="brand-mark">JA</span><span>Job Agent</span></div>
+    <div class="brand"><span class="brand-mark">RF</span><span class="brand-name">RoleForge</span></div>
     <section class="panel">
       <div class="panel-head">
         <h1>Upload your resume</h1>
-        <p class="copy">Start by adding a resume. Job Agent will parse it, find matching jobs, and build your dashboard.</p>
+        <p class="copy">Start by adding a resume. RoleForge will parse it, find matching jobs, and build your dashboard.</p>
       </div>
       <form id="resumeUploadForm">
         <div class="body">
@@ -632,6 +635,8 @@ def rebase_dashboard_resume_links(html_text: str) -> str:
 
 
 def inject_dashboard_run_control(html_text: str) -> str:
+    html_text = inject_roleforge_branding(html_text)
+    html_text = inject_roleforge_footer(html_text)
     html_text = inject_candidate_profile(html_text)
     html_text = inject_resume_insights(html_text)
     html_text = inject_dashboard_download_labels(html_text)
@@ -1276,6 +1281,89 @@ def inject_dashboard_download_labels(html_text: str) -> str:
     return html_text
 
 
+def roleforge_footer_html() -> str:
+    year = dt.datetime.now().year
+    return f"""
+  <footer class="site-footer" data-roleforge-footer>
+    <div class="site-footer-inner">
+      <span>&copy; {year} RoleForge. All rights reserved.</span>
+      <span>Developed by Chandan Ghosh: <a href="https://www.linkedin.com/in/chandan-ghosh-43350650/" target="_blank" rel="noopener">https://www.linkedin.com/in/chandan-ghosh-43350650/</a></span>
+    </div>
+  </footer>"""
+
+
+def roleforge_footer_css() -> str:
+    return """
+    .site-footer { border-top: 1px solid rgba(255,210,31,.14); background: #080808; }
+    .site-footer-inner { width: min(1240px, calc(100% - 32px)); margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; color: var(--muted); font-size: 12px; }
+    .site-footer a { color: var(--accent); font-weight: 850; text-decoration: none; }
+    .site-footer a:hover { color: var(--accent-strong); }
+    @media (max-width: 820px) { .site-footer-inner { flex-direction: column; align-items: flex-start; } }
+"""
+
+
+def inject_roleforge_footer(html_text: str) -> str:
+    if ".site-footer {" not in html_text:
+        html_text = html_text.replace("</style>", f"{roleforge_footer_css()}  </style>", 1)
+    if "data-roleforge-footer" not in html_text and "</main>" in html_text:
+        html_text = html_text.replace("</main>", f"</main>{roleforge_footer_html()}", 1)
+    return html_text
+
+
+def roleforge_brand_css() -> str:
+    return (
+        "    .brand-name { color: var(--ink); font-weight: 950; white-space: nowrap; }\n"
+        "    .brand-mark { position: relative; width: 42px; height: 42px; flex: 0 0 42px; border-radius: 10px; display: grid; place-items: center; overflow: hidden; background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: #050505; font-size: 13px; font-weight: 950; box-shadow: 0 12px 28px rgba(255,210,31,.16); }\n"
+        "    .brand-mark::before { content: \"\"; position: absolute; inset: 7px; border: 2px solid rgba(5,5,5,.24); border-radius: 7px; transform: rotate(-8deg); }\n"
+        "    .brand-mark::after { content: \"\"; position: absolute; right: 7px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: rgba(5,5,5,.66); box-shadow: -14px 16px 0 rgba(5,5,5,.36); }\n"
+        "    @media (max-width: 820px) { .nav { min-height: 62px; flex-wrap: wrap; gap: 10px; padding: 10px 0; } .nav-actions { width: 100%; flex-wrap: wrap; gap: 8px; padding-bottom: 2px; } .brand-name { font-size: 15px; } .button { min-height: 36px; padding: 8px 10px; } }"
+    )
+
+
+def inject_roleforge_branding(html_text: str) -> str:
+    html_text = html_text.replace("<title>Job Agent - Upload Resume</title>", "<title>RoleForge - Upload Resume</title>")
+    html_text = re.sub(
+        r"<title>Latest Job Matches - ([^<]+)</title>",
+        r"<title>RoleForge - Latest Job Matches - \1</title>",
+        html_text,
+        count=1,
+    )
+    html_text = re.sub(
+        r'<span class="brand-mark">(?:JA|RF)</span><span(?: class="brand-name")?>[^<]*(?:Job Agent|RoleForge)[^<]*</span>',
+        '<span class="brand-mark">RF</span><span class="brand-name">RoleForge</span>',
+        html_text,
+        count=1,
+    )
+    html_text = html_text.replace(
+        "Job Agent will parse it, find matching jobs, and build your dashboard.",
+        "RoleForge will parse it, find matching jobs, and build your dashboard.",
+    )
+    if ".brand-name {" not in html_text:
+        old_brand_css = (
+            ".brand-mark { width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; "
+            "background: var(--accent); color: #050505; font-weight: 950; }"
+        )
+        if old_brand_css in html_text:
+            html_text = html_text.replace(old_brand_css, roleforge_brand_css().strip(), 1)
+        else:
+            html_text = html_text.replace("</style>", f"{roleforge_brand_css()}\n  </style>", 1)
+    if "RoleForge mobile header" not in html_text and "flex-wrap: wrap; gap: 10px; padding: 10px 0;" not in html_text:
+        html_text = html_text.replace(
+            "</style>",
+            """
+    /* RoleForge mobile header */
+    @media (max-width: 820px) {
+      .nav { min-height: 62px; flex-wrap: wrap; gap: 10px; padding: 10px 0; }
+      .nav-actions { width: 100%; flex-wrap: wrap; gap: 8px; padding-bottom: 2px; }
+      .brand-name { font-size: 15px; }
+      .button { min-height: 36px; padding: 8px 10px; }
+    }
+  </style>""",
+            1,
+        )
+    return html_text
+
+
 def clean_dashboard_text(value: object) -> str:
     if value is None:
         return ""
@@ -1522,9 +1610,7 @@ def inject_candidate_profile(html_text: str) -> str:
             1,
         )
     if ".profile-button" not in html_text:
-        html_text = html_text.replace(
-            ".brand-mark { width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; background: var(--accent); color: #050505; font-weight: 950; }",
-            ".brand-mark { width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; background: var(--accent); color: #050505; font-weight: 950; }\n"
+        profile_css = (
             "    .profile-menu { position: relative; display: inline-flex; align-items: center; }\n"
             "    .profile-button { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid rgba(255,210,31,.58); border-radius: 50%; background: var(--accent); color: #050505; font: inherit; font-size: 13px; font-weight: 950; cursor: pointer; box-shadow: 0 10px 26px rgba(255,210,31,.14); }\n"
             "    .profile-button:hover { background: var(--accent-strong); }\n"
@@ -1534,8 +1620,13 @@ def inject_candidate_profile(html_text: str) -> str:
             "    .profile-dropdown-title { color: var(--accent); font-size: 15px; font-weight: 950; line-height: 1.2; }\n"
             "    .profile-dropdown-row { display: grid; gap: 2px; padding-top: 8px; border-top: 1px solid var(--line); }\n"
             "    .profile-dropdown-row span { color: var(--muted); font-size: 10px; font-weight: 950; text-transform: uppercase; }\n"
-            "    .profile-dropdown-row strong { display: block; color: var(--ink); font-size: 13px; line-height: 1.35; }",
+            "    .profile-dropdown-row strong { display: block; color: var(--ink); font-size: 13px; line-height: 1.35; }"
         )
+        old_brand_css = ".brand-mark { width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; background: var(--accent); color: #050505; font-weight: 950; }"
+        updated = html_text.replace(old_brand_css, f"{old_brand_css}\n{profile_css}", 1)
+        if updated == html_text:
+            updated = html_text.replace("</style>", f"{profile_css}\n  </style>", 1)
+        html_text = updated
     if "serverInjectedProfileDropdown" not in html_text and "const profileButton = document.getElementById('profileButton')" not in html_text:
         script = """
   <script>
