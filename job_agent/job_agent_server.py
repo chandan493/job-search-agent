@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import cgi
 import datetime as dt
+import io
 import json
 import mimetypes
 import os
@@ -15,6 +17,7 @@ import subprocess
 import sys
 import threading
 import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -191,6 +194,22 @@ def safe_download_name(value: str) -> str:
     return (safe[:120] or "ats_resume") + ".docx"
 
 
+def safe_upload_name(value: str) -> str:
+    base = Path(value or "resume").name
+    stem = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in Path(base).stem).strip("_")
+    suffix = Path(base).suffix.lower()
+    if suffix not in {".pdf", ".docx", ".txt"}:
+        raise ValueError("Upload a PDF, DOCX, or TXT resume.")
+    return f"{stem[:70] or 'resume'}_{uuid.uuid4().hex[:8]}{suffix}"
+
+
+def config_relative_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(CONFIG_PATH.parent))
+    except ValueError:
+        return str(path)
+
+
 class ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
@@ -271,6 +290,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/settings":
             self.save_settings()
             return
+        if parsed.path == "/resume-upload":
+            self.upload_resume()
+            return
         self.send_text(404, "Unknown dashboard route")
 
     def read_json_body(self) -> dict:
@@ -296,6 +318,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"ok": False, "message": f"Could not save settings: {exc}"})
             return
         self.send_json(200, {"ok": True, "settings": settings})
+
+    def upload_resume(self) -> None:
+        try:
+            content_type = self.headers.get("Content-Type", "")
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length <= 0:
+                raise ValueError("No resume file was uploaded.")
+            if length > 25 * 1024 * 1024:
+                raise ValueError("Resume upload is too large. Please keep it under 25 MB.")
+            body = self.rfile.read(length)
+            form = cgi.FieldStorage(
+                fp=io.BytesIO(body),
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": content_type,
+                    "CONTENT_LENGTH": str(length),
+                },
+                keep_blank_values=True,
+            )
+            field = form["resume"] if "resume" in form else None
+            if field is None or not getattr(field, "filename", ""):
+                raise ValueError("Choose a resume file before uploading.")
+            filename = safe_upload_name(field.filename)
+            payload = field.file.read()
+            if not payload:
+                raise ValueError("Uploaded resume file is empty.")
+            upload_dir = DATA_DIR / "uploaded_resumes"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            resume_path = upload_dir / filename
+            resume_path.write_bytes(payload)
+            config = load_config()
+            config["resume_path"] = config_relative_path(resume_path)
+            write_config(config)
+        except Exception as exc:
+            self.send_json(400, {"ok": False, "message": f"Could not upload resume: {exc}"})
+            return
+        self.send_json(
+            200,
+            {
+                "ok": True,
+                "resume_path": config_relative_path(resume_path),
+                "filename": resume_path.name,
+                "message": "Resume updated. Running a fresh report now.",
+            },
+        )
 
     def run_agent(self) -> None:
         if not RUN_LOCK.acquire(blocking=False):
@@ -402,6 +469,13 @@ def inject_dashboard_run_control(html_text: str) -> str:
         html_text = html_text.replace(
             '<div class="nav-actions">',
             '<div class="nav-actions"><button class="button secondary" id="settingsButton" type="button">Config</button>',
+            1,
+        )
+    if "resumeChangeButton" not in html_text:
+        html_text = html_text.replace(
+            '<button class="button secondary" id="settingsButton" type="button">Config</button>',
+            '<button class="button secondary" id="settingsButton" type="button">Config</button>'
+            '<button class="button secondary" id="resumeChangeButton" type="button">Change resume</button>',
             1,
         )
     if "runLoader" not in html_text:
@@ -515,6 +589,54 @@ def inject_dashboard_run_control(html_text: str) -> str:
         <div class="settings-actions">
           <button class="button secondary" id="settingsCancelButton" type="button">Cancel</button>
           <button class="button primary" id="settingsSaveButton" type="submit">Save configuration</button>
+        </div>
+      </form>
+    </section>
+  </div>
+"""
+        html_text = html_text.replace("</body>", f"{modal}</body>")
+    if ".resume-upload-modal" not in html_text:
+        html_text = html_text.replace(
+            "</style>",
+            """
+    .resume-upload-modal { position: fixed; inset: 0; z-index: 55; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.72); }
+    .resume-upload-modal.is-open { display: flex; }
+    .resume-upload-panel { width: min(560px, 100%); border: 1px solid rgba(255,210,31,.24); border-radius: 8px; background: #101010; box-shadow: var(--shadow); }
+    .resume-upload-head { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+    .resume-upload-title { margin: 0; color: var(--ink); font-size: 1rem; }
+    .resume-upload-body { display: grid; gap: 14px; padding: 16px; }
+    .resume-dropzone { min-height: 170px; display: grid; place-items: center; gap: 8px; padding: 20px; border: 1px dashed rgba(255,210,31,.48); border-radius: 8px; background: rgba(255,255,255,.04); color: var(--ink); text-align: center; cursor: pointer; }
+    .resume-dropzone.is-dragging { border-color: var(--accent); background: rgba(255,210,31,.09); }
+    .resume-dropzone strong { display: block; color: var(--accent); font-size: 15px; }
+    .resume-dropzone span { display: block; color: var(--muted); font-size: 12px; }
+    .resume-file-name { min-height: 18px; color: var(--muted); font-size: 12px; }
+    .resume-upload-message { min-height: 18px; color: var(--muted); font-size: 12px; }
+    .resume-upload-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 16px; border-top: 1px solid var(--line); }
+  </style>""",
+        )
+    if "resumeUploadModal" not in html_text:
+        modal = """
+  <div class="resume-upload-modal" id="resumeUploadModal" aria-hidden="true">
+    <section class="resume-upload-panel" role="dialog" aria-modal="true" aria-labelledby="resumeUploadTitle">
+      <div class="resume-upload-head">
+        <h2 class="resume-upload-title" id="resumeUploadTitle">Change resume</h2>
+        <button class="button secondary" id="resumeUploadCloseButton" type="button">Close</button>
+      </div>
+      <form id="resumeUploadForm">
+        <div class="resume-upload-body">
+          <label class="resume-dropzone" id="resumeDropzone" for="resumeUploadInput">
+            <input id="resumeUploadInput" name="resume" type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" hidden>
+            <span>
+              <strong>Drop your resume here</strong>
+              <span>PDF, DOCX, or TXT. This updates config.json and runs a fresh report.</span>
+            </span>
+          </label>
+          <div class="resume-file-name" id="resumeFileName">No file selected</div>
+          <div class="resume-upload-message" id="resumeUploadMessage"></div>
+        </div>
+        <div class="resume-upload-actions">
+          <button class="button secondary" id="resumeUploadCancelButton" type="button">Cancel</button>
+          <button class="button primary" id="resumeUploadSubmitButton" type="submit">Upload and run</button>
         </div>
       </form>
     </section>
@@ -684,6 +806,143 @@ def inject_dashboard_run_control(html_text: str) -> str:
     if (serverInjectedSettingsModal) {
       serverInjectedSettingsModal.addEventListener('click', (event) => {
         if (event.target === serverInjectedSettingsModal) serverInjectedCloseSettings();
+      });
+    }
+  </script>
+"""
+        html_text = html_text.replace("</body>", f"{script}</body>")
+    if "serverInjectedResumeUpload" not in html_text:
+        script = """
+  <script>
+    const serverInjectedResumeUploadModal = document.getElementById('resumeUploadModal');
+    const serverInjectedResumeChangeButton = document.getElementById('resumeChangeButton');
+    const serverInjectedResumeUploadForm = document.getElementById('resumeUploadForm');
+    const serverInjectedResumeUploadInput = document.getElementById('resumeUploadInput');
+    const serverInjectedResumeDropzone = document.getElementById('resumeDropzone');
+    const serverInjectedResumeFileName = document.getElementById('resumeFileName');
+    const serverInjectedResumeUploadMessage = document.getElementById('resumeUploadMessage');
+    const serverInjectedResumeUploadSubmit = document.getElementById('resumeUploadSubmitButton');
+
+    function serverInjectedSetResumeUploadMessage(message) {
+      if (serverInjectedResumeUploadMessage) serverInjectedResumeUploadMessage.textContent = message || '';
+    }
+    function serverInjectedResumeSelectedFile() {
+      return serverInjectedResumeUploadInput && serverInjectedResumeUploadInput.files && serverInjectedResumeUploadInput.files[0];
+    }
+    function serverInjectedUpdateResumeFileName() {
+      const file = serverInjectedResumeSelectedFile();
+      if (serverInjectedResumeFileName) serverInjectedResumeFileName.textContent = file ? file.name : 'No file selected';
+    }
+    function serverInjectedOpenResumeUpload() {
+      if (!serverInjectedResumeUploadModal) return;
+      serverInjectedResumeUploadModal.classList.add('is-open');
+      serverInjectedResumeUploadModal.setAttribute('aria-hidden', 'false');
+      serverInjectedSetResumeUploadMessage('');
+      serverInjectedUpdateResumeFileName();
+    }
+    function serverInjectedCloseResumeUpload() {
+      if (!serverInjectedResumeUploadModal) return;
+      serverInjectedResumeUploadModal.classList.remove('is-open');
+      serverInjectedResumeUploadModal.setAttribute('aria-hidden', 'true');
+    }
+    function serverInjectedStartReportProgress(label) {
+      const runAgentButton = document.getElementById('runAgentButton');
+      const runAgentStatus = document.getElementById('runAgentStatus');
+      if (runAgentButton) {
+        runAgentButton.disabled = true;
+        runAgentButton.textContent = 'Running...';
+      }
+      if (runAgentStatus) runAgentStatus.textContent = label || 'Searching jobs';
+      if (typeof serverInjectedStartRunProgress === 'function') serverInjectedStartRunProgress(label || 'Searching jobs');
+      else if (typeof startRunProgress === 'function') startRunProgress(label || 'Searching jobs');
+    }
+    function serverInjectedFinishReportProgress(label) {
+      const runAgentStatus = document.getElementById('runAgentStatus');
+      if (runAgentStatus) runAgentStatus.textContent = label || 'Refreshing';
+      if (typeof serverInjectedStopRunProgress === 'function') serverInjectedStopRunProgress(false);
+      if (typeof serverInjectedSetRunProgress === 'function') serverInjectedSetRunProgress(100, label || 'Refreshing');
+      else if (typeof completeRunProgress === 'function') completeRunProgress(label || 'Refreshing');
+    }
+    async function serverInjectedUploadResumeAndRun(event) {
+      event.preventDefault();
+      const file = serverInjectedResumeSelectedFile();
+      if (!file) {
+        serverInjectedSetResumeUploadMessage('Choose a PDF, DOCX, or TXT resume first.');
+        return;
+      }
+      const allowed = ['.pdf', '.docx', '.txt'];
+      const name = file.name.toLowerCase();
+      if (!allowed.some((suffix) => name.endsWith(suffix))) {
+        serverInjectedSetResumeUploadMessage('Upload a PDF, DOCX, or TXT resume.');
+        return;
+      }
+      if (serverInjectedResumeUploadSubmit) serverInjectedResumeUploadSubmit.disabled = true;
+      serverInjectedSetResumeUploadMessage('Uploading resume');
+      try {
+        const formData = new FormData();
+        formData.append('resume', file);
+        const uploadResponse = await fetch('/resume-upload', { method: 'POST', body: formData });
+        const uploadPayload = await uploadResponse.json();
+        if (!uploadResponse.ok || !uploadPayload.ok) {
+          throw new Error(uploadPayload.message || 'Resume upload failed');
+        }
+        serverInjectedSetResumeUploadMessage('Resume updated. Running a fresh report.');
+        serverInjectedCloseResumeUpload();
+        serverInjectedStartReportProgress('Parsing new resume');
+        const runResponse = await fetch('/run-agent', { method: 'POST' });
+        const runPayload = await runResponse.json();
+        if (!runResponse.ok || !runPayload.ok) {
+          throw new Error(runPayload.message || runPayload.stderr || 'Fresh report failed');
+        }
+        serverInjectedFinishReportProgress('Refreshing');
+        window.setTimeout(() => window.location.reload(), 450);
+      } catch (error) {
+        serverInjectedSetResumeUploadMessage(error.message || 'Resume update failed');
+        const runAgentButton = document.getElementById('runAgentButton');
+        const runAgentStatus = document.getElementById('runAgentStatus');
+        if (runAgentButton) {
+          runAgentButton.disabled = false;
+          runAgentButton.textContent = 'Run fresh report';
+        }
+        if (runAgentStatus) runAgentStatus.textContent = error.message || 'Resume update failed';
+        if (typeof serverInjectedStopRunProgress === 'function') serverInjectedStopRunProgress();
+        else if (typeof stopRunProgress === 'function') stopRunProgress();
+      } finally {
+        if (serverInjectedResumeUploadSubmit) serverInjectedResumeUploadSubmit.disabled = false;
+      }
+    }
+    if (serverInjectedResumeChangeButton) serverInjectedResumeChangeButton.addEventListener('click', serverInjectedOpenResumeUpload);
+    if (serverInjectedResumeUploadInput) serverInjectedResumeUploadInput.addEventListener('change', serverInjectedUpdateResumeFileName);
+    if (serverInjectedResumeUploadForm) serverInjectedResumeUploadForm.addEventListener('submit', serverInjectedUploadResumeAndRun);
+    const serverInjectedResumeUploadClose = document.getElementById('resumeUploadCloseButton');
+    const serverInjectedResumeUploadCancel = document.getElementById('resumeUploadCancelButton');
+    if (serverInjectedResumeUploadClose) serverInjectedResumeUploadClose.addEventListener('click', serverInjectedCloseResumeUpload);
+    if (serverInjectedResumeUploadCancel) serverInjectedResumeUploadCancel.addEventListener('click', serverInjectedCloseResumeUpload);
+    if (serverInjectedResumeUploadModal) {
+      serverInjectedResumeUploadModal.addEventListener('click', (event) => {
+        if (event.target === serverInjectedResumeUploadModal) serverInjectedCloseResumeUpload();
+      });
+    }
+    if (serverInjectedResumeDropzone && serverInjectedResumeUploadInput) {
+      ['dragenter', 'dragover'].forEach((name) => {
+        serverInjectedResumeDropzone.addEventListener(name, (event) => {
+          event.preventDefault();
+          serverInjectedResumeDropzone.classList.add('is-dragging');
+        });
+      });
+      ['dragleave', 'drop'].forEach((name) => {
+        serverInjectedResumeDropzone.addEventListener(name, (event) => {
+          event.preventDefault();
+          serverInjectedResumeDropzone.classList.remove('is-dragging');
+        });
+      });
+      serverInjectedResumeDropzone.addEventListener('drop', (event) => {
+        const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+        if (!file) return;
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        serverInjectedResumeUploadInput.files = transfer.files;
+        serverInjectedUpdateResumeFileName();
       });
     }
   </script>

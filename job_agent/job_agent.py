@@ -714,6 +714,96 @@ def salary_meets_expectation(salary_text: str, expected: Dict[str, Any], usd_to_
     return "Yes" if max(nums) >= int(amount) else "No"
 
 
+def resume_years(profile: Dict[str, Any]) -> Optional[float]:
+    value = clean_text(profile.get("total_years_experience", ""))
+    match = re.search(r"\d+(?:\.\d+)?", value)
+    return float(match.group(0)) if match else None
+
+
+def seniority_salary_band(title: str, years: Optional[float]) -> Tuple[float, float, str]:
+    lowered = title.lower()
+    if any(token in lowered for token in ("director", "head of", "vp ", "vice president")):
+        return 8000000, 18000000, "director/head"
+    if any(token in lowered for token in ("principal", "staff", "architect")):
+        return 5500000, 14000000, "staff/principal"
+    if any(token in lowered for token in ("lead", "manager", "engineering manager", "tech lead")):
+        return 4000000, 9500000, "lead/manager"
+    if any(token in lowered for token in ("senior", "sr.", "sr ")):
+        return 2500000, 6500000, "senior"
+    if any(token in lowered for token in ("junior", "associate", "entry", "fresher")):
+        return 500000, 1500000, "early career"
+    if years is not None:
+        if years >= 12:
+            return 4500000, 10500000, "12+ years"
+        if years >= 8:
+            return 3000000, 7500000, "8+ years"
+        if years >= 5:
+            return 2000000, 5000000, "5+ years"
+        if years >= 2:
+            return 1000000, 2800000, "2+ years"
+    return 900000, 2400000, "market baseline"
+
+
+def role_salary_multiplier(text: str) -> Tuple[float, str]:
+    lowered = text.lower()
+    if any(token in lowered for token in ("machine learning", "ml engineer", " ai", "ai ", "genai", "llm", "data scientist")):
+        return 1.25, "AI/ML premium"
+    if any(token in lowered for token in ("product manager", "program manager", "strategy")):
+        return 1.15, "product/strategy role"
+    if any(token in lowered for token in ("devops", "sre", "platform", "cloud", "security")):
+        return 1.12, "cloud/platform premium"
+    if any(token in lowered for token in ("data engineer", "analytics engineer")):
+        return 1.10, "data engineering role"
+    if any(token in lowered for token in ("qa", "quality", "test engineer", "support")):
+        return 0.78, "QA/support role"
+    if any(token in lowered for token in ("frontend", "front end", "mobile", "android", "ios")):
+        return 0.95, "frontend/mobile role"
+    return 1.0, "software role"
+
+
+def location_salary_multiplier(location: str) -> Tuple[float, str]:
+    lowered = location.lower()
+    if any(token in lowered for token in ("united states", " usa", " us ", "new york", "san francisco", "california")):
+        return 1.8, "US/global market"
+    if any(token in lowered for token in ("europe", "germany", "netherlands", "uk", "london")):
+        return 1.4, "Europe/UK market"
+    if any(token in lowered for token in ("singapore", "australia")):
+        return 1.45, "APAC premium market"
+    if any(token in lowered for token in ("uae", "dubai", "abu dhabi")):
+        return 1.25, "Gulf market"
+    if any(token in lowered for token in ("bangalore", "bengaluru", "hyderabad", "gurgaon", "gurugram", "mumbai", "pune", "delhi", "noida")):
+        return 1.08, "major India tech hub"
+    if "remote" in lowered:
+        return 1.03, "remote market"
+    return 1.0, "location baseline"
+
+
+def round_salary(value: float) -> int:
+    step = 50000 if value < 3000000 else 100000
+    return int(round(value / step) * step)
+
+
+def estimated_salary_for_job(job: Dict[str, Any], resume_profile: Dict[str, Any]) -> Dict[str, str]:
+    title = clean_text(job.get("title", ""))
+    location = clean_text(job.get("location", ""))
+    text = " ".join([title, clean_text(job.get("description", "")), clean_text(job.get("matched_keywords", ""))])
+    low, high, seniority_basis = seniority_salary_band(title, resume_years(resume_profile))
+    role_factor, role_basis = role_salary_multiplier(text)
+    location_factor, location_basis = location_salary_multiplier(location)
+    low = round_salary(low * role_factor * location_factor)
+    high = round_salary(high * role_factor * location_factor)
+    if high <= low:
+        high = low + 500000
+    return {
+        "display": f"{format_inr(low)} - {format_inr(high)}",
+        "detail": (
+            f"Estimated market range based on role seniority ({seniority_basis}), {role_basis}, and {location_basis}. "
+            "This is not a posted salary or offer. Validate against public compensation benchmarks such as Levels.fyi, "
+            "Glassdoor, AmbitionBox, company career pages, and recruiter conversations."
+        ),
+    }
+
+
 def job_id(source: str, title: str, company: str, url: str) -> str:
     key = f"{source}|{title}|{company}|{url}".lower()
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
@@ -1329,6 +1419,10 @@ def filter_jobs(
         row["matched_keywords"] = ", ".join(matched)
         row["salary_inr"] = salary_to_inr_display(row.get("salary", ""), usd_to_inr)
         row["salary_meets_expectation"] = salary_meets_expectation(row.get("salary", ""), expected, usd_to_inr)
+        salary_estimate = estimated_salary_for_job(row, resume_profile)
+        row["salary_estimate"] = salary_estimate["display"]
+        row["salary_estimate_detail"] = salary_estimate["detail"]
+        row["salary_is_estimated"] = "yes" if not row["salary_inr"] else ""
         row["job_uid"] = job_id(row["source"], row["title"], row["company"], row["apply_link"])
         filtered.append(row)
     return sorted(filtered, key=lambda item: (-item["match_score"], item["source"], item["title"]))
@@ -1411,6 +1505,9 @@ def job_to_dashboard_record(job: Dict[str, Any], run_date: dt.date) -> Dict[str,
         "company": job.get("company", ""),
         "location": job.get("location", ""),
         "salary_inr": job.get("salary_inr") or job.get("salary", ""),
+        "salary_estimate": job.get("salary_estimate", ""),
+        "salary_estimate_detail": job.get("salary_estimate_detail", ""),
+        "salary_is_estimated": job.get("salary_is_estimated", ""),
         "salary_meets_expectation": job.get("salary_meets_expectation", ""),
         "match_score": job.get("match_score", ""),
         "matched_keywords": job.get("matched_keywords", ""),
@@ -1474,6 +1571,17 @@ def write_latest_jobs_outputs(
         resume_url = f"/resume/{uid}"
         apply = html.escape(job["apply_link"])
         resume_label = html.escape(f"Download tailored resume for {job['title']} at {job['company']}")
+        if job.get("salary_inr"):
+            salary_html = html.escape(job["salary_inr"])
+        elif job.get("salary_estimate"):
+            salary_html = (
+                f'<span class="salary-estimate">Est. {html.escape(job["salary_estimate"])} '
+                '<span class="salary-info" tabindex="0" aria-label="Salary estimate details">i'
+                f'<span class="salary-tooltip">{html.escape(job["salary_estimate_detail"])}</span>'
+                '</span></span>'
+            )
+        else:
+            salary_html = "Not listed"
         html_rows.append(
             f"<tr data-source=\"{html.escape(job['source'])}\" data-location=\"{html.escape(job['location'])}\" "
             f"data-search=\"{html.escape(' '.join([job['title'], job['company'], job['location'], job['source'], job['matched_keywords']]).lower())}\">"
@@ -1481,7 +1589,7 @@ def write_latest_jobs_outputs(
             f"<td><span class=\"date\">{html.escape(job['posted_date'])}</span><span class=\"source-chip\">{html.escape(job['source'])}</span></td>"
             f"<td><strong>{html.escape(job['title'])}</strong><br><span>{html.escape(job['company'])}</span></td>"
             f"<td>{html.escape(job['location'])}</td>"
-            f"<td>{html.escape(job['salary_inr'] or 'Not listed')}</td>"
+            f"<td>{salary_html}</td>"
             f"<td><span class=\"keywords\">{html.escape(job['matched_keywords'])}</span></td>"
             f"<td><a class=\"button secondary\" href=\"{apply}\" target=\"_blank\" rel=\"noopener\">Apply</a></td>"
             f"<td><a class=\"button primary download-button\" href=\"{resume_url}\" aria-label=\"{resume_label}\">Download</a></td>"
@@ -1581,6 +1689,11 @@ def write_latest_jobs_outputs(
     span {{ color: var(--muted); }}
     .score {{ display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--accent); color: #050505; font-weight: 950; }}
     .source-chip {{ display: inline-flex; margin-top: 7px; padding: 3px 7px; border: 1px solid rgba(255,210,31,.28); border-radius: 999px; color: var(--accent); font-size: 11px; }}
+    .salary-estimate {{ display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 850; }}
+    .salary-info {{ position: relative; width: 18px; height: 18px; display: inline-grid; place-items: center; flex: 0 0 auto; border: 1px solid rgba(255,210,31,.5); border-radius: 50%; color: var(--accent); background: rgba(255,210,31,.08); font-size: 11px; font-weight: 950; cursor: help; }}
+    .salary-info:focus-visible {{ outline: 2px solid rgba(255,210,31,.55); outline-offset: 2px; }}
+    .salary-tooltip {{ position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 8; width: min(320px, calc(100vw - 40px)); display: none; padding: 10px 11px; border: 1px solid rgba(255,210,31,.28); border-radius: 8px; background: #101010; color: var(--ink); box-shadow: var(--shadow); font-size: 12px; font-weight: 600; line-height: 1.45; text-align: left; }}
+    .salary-info:hover .salary-tooltip, .salary-info:focus .salary-tooltip, .salary-info.is-open .salary-tooltip {{ display: block; }}
     .keywords {{ color: rgba(255,255,255,.76); }}
     .empty {{ display: none; padding: 26px; text-align: center; color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }}
     .count {{ color: var(--accent); font-weight: 950; }}
@@ -1680,6 +1793,7 @@ def write_latest_jobs_outputs(
     const resumeDownloadRing = document.getElementById('resumeDownloadRing');
     const resumeDownloadPercent = document.getElementById('resumeDownloadPercent');
     const resumeDownloadMessage = document.getElementById('resumeDownloadMessage');
+    const salaryInfoMarkers = Array.from(document.querySelectorAll('.salary-info'));
     let runProgressTimer = null;
     let runProgressValue = 1;
     let resumeDownloadTimer = null;
@@ -1850,6 +1964,18 @@ def write_latest_jobs_outputs(
 
     runAgentButton.addEventListener('click', runFreshReport);
     document.querySelectorAll('.download-button').forEach((link) => link.addEventListener('click', downloadTailoredResume));
+    salaryInfoMarkers.forEach((marker) => {{
+      marker.addEventListener('click', (event) => {{
+        event.stopPropagation();
+        const shouldOpen = !marker.classList.contains('is-open');
+        salaryInfoMarkers.forEach((item) => item.classList.remove('is-open'));
+        marker.classList.toggle('is-open', shouldOpen);
+      }});
+    }});
+    document.addEventListener('click', () => salaryInfoMarkers.forEach((marker) => marker.classList.remove('is-open')));
+    document.addEventListener('keydown', (event) => {{
+      if (event.key === 'Escape') salaryInfoMarkers.forEach((marker) => marker.classList.remove('is-open'));
+    }});
     if (profileButton && profileDropdown) {{
       profileButton.addEventListener('click', (event) => {{
         event.stopPropagation();
